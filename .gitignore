@@ -1,0 +1,46 @@
+# Local settings: copy .env.example to .env and edit it.
+.env
+.env.*
+!.env.example
+
+# The original mockup files; design/ holds identical copies under plain names.
+/Draft 2*@2x.png
+
+# Screenshots from the first build's checks (old layout, simulated machines).
+/docs/verification/
+
+# Hub state when run outside Docker (HUB_DATA=./data): holds the shared agent token.
+/data/
+
+# Agent config and token files from local test runs; they can hold the token.
+agent.json
+token
+*.token
+
+# Build outputs, if you build outside Docker (go build ./cmd/hub, ./cmd/agent,
+# ./tools/lightshow, or the agent fetched with curl -o btop-agent).
+/bin/
+/dist/
+/hub
+/agent
+/lightshow
+/btop-agent
+/btop-agent-*
+cmd/hub/hub
+cmd/agent/agent
+tools/lightshow/lightshow
+*.exe
+*.gz
+*.test
+*.out
+
+# Editor and OS clutter.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Claude Code per-user settings.
+.claude/settings.local.json

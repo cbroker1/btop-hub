@@ -1,0 +1,6 @@
+.git
+design
+*.png
+*.md
+.env
+data

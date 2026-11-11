@@ -1,0 +1,44 @@
+[Unit]
+Description=btop hub agent (streams this machine's activity to __HUB_URL__)
+Documentation=__HUB_URL__
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/btop-agent --config /etc/btop-agent/agent.json
+# The token is handed over as a systemd credential; the agent reads $CREDENTIALS_DIRECTORY/token.
+LoadCredential=token:/etc/btop-agent/token
+DynamicUser=yes
+Restart=always
+RestartSec=5
+
+# Below-normal priority: never compete with real work or games.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+MemoryMax=64M
+
+# The agent only reads /proc, /sys and the NVIDIA driver, and makes one outbound connection.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

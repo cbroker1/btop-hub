@@ -1,0 +1,33 @@
+# btop hub. Settings live in .env (address, port, allowed network, pane order).
+name: btop-hub
+
+services:
+  hub:
+    build: .
+    image: btop-hub:1.0.0
+    container_name: btop-hub
+    restart: unless-stopped
+    # Published only on the VLAN address. Docker's published ports bypass ufw, so the hub
+    # also rejects any source outside HUB_ALLOW itself.
+    ports:
+      - "${HUB_BIND:?set HUB_BIND in .env}:${HUB_PORT:-28677}:28677"
+    environment:
+      HUB_ALLOW: "${HUB_ALLOW:?set HUB_ALLOW in .env}"
+      HUB_URL: "http://${HUB_BIND}:${HUB_PORT:-28677}"
+      HUB_ORDER: "${HUB_ORDER:-}"
+    volumes:
+      - hub-data:/data
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    memswap_limit: 64m
+    pids_limit: 64
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "2" }
+
+volumes:
+  hub-data:

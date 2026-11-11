@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>btop hub</title>
+<link rel="icon" href="data:,">
+<link rel="preload" href="fonts/jbm-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/jbm-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Live activity of each machine over the last hour"></canvas>
+<button id="fs" type="button" aria-label="Full screen" title="Full screen (F)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 6V1h5M10 1h5v5M15 10v5h-5M6 15H1v-5"/></svg></button>
+<div id="detail" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <div class="head">
+      <div class="titles"><h2 id="detail-title"></h2><p id="detail-sub"></p></div>
+      <div class="span" role="group" aria-label="Time range">
+        <button type="button" data-span="600" aria-pressed="true">10 min</button><button type="button" data-span="3600" aria-pressed="false">1 hour</button>
+      </div>
+      <button type="button" id="detail-close" aria-label="Close" title="Close (Esc)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
+    </div>
+    <table id="detail-table"></table>
+    <div id="detail-threads"></div>
+    <canvas id="detail-chart" aria-hidden="true"></canvas>
+  </div>
+</div>
+<script src="app.js" defer></script>
+</body>
+</html>

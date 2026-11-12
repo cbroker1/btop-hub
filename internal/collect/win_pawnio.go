@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -35,6 +36,11 @@ const (
 	winPawnIOVersion   = 0xA1B22184 // CTL_CODE(41394, 0x861, METHOD_BUFFERED, FILE_ANY_ACCESS)
 	winAccessPCI       = `Global\Access_PCI`
 	winAccessPCIWaitMs = 50
+	// Created by the agent, the mutex lets SYSTEM and Administrators open it fully (HWiNFO,
+	// LibreHardwareMonitor and FanControl run elevated and ask for full access), and everyone
+	// else wait on it (SYNCHRONIZE | MUTANT_QUERY_STATE, .NET's Mutex.OpenExisting rights).
+	// SYSTEM's default DACL would leave elevated programs only SYNCHRONIZE.
+	winAccessPCISDDL = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;WD)"
 )
 
 // winPawnIO is an open PawnIO handle with the AMDFamily17 module loaded, and heap buffers
@@ -95,7 +101,11 @@ func winOpenPawnIO() (p *winPawnIO, raw uint32, why string) {
 // risk of clashing with another program reading these registers at the same moment.
 func (p *winPawnIO) openMutex() {
 	name, _ := windows.UTF16PtrFromString(winAccessPCI)
-	m, err := windows.CreateMutex(nil, false, name)
+	var sa *windows.SecurityAttributes
+	if sd, err := windows.SecurityDescriptorFromString(winAccessPCISDDL); err == nil {
+		sa = &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	}
+	m, err := windows.CreateMutex(sa, false, name)
 	switch {
 	case m != 0 && errors.Is(err, windows.ERROR_ALREADY_EXISTS):
 		p.mutex, p.mutexBy = m, "opened (another program created it)"

@@ -677,3 +677,21 @@ func winPdhNotReady(code uint32) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------------------
+// ASUS ATK ACPI
+
+// winASUSTemp decodes the ATK "device status" (DSTS) reply for a temperature device: bit 16
+// says the device is present and the low 16 bits are °C. Firmware answers 0xFFFFFFFE (older
+// firmware 0) for a device it does not have, and 0x10000 (present, 0 °C) where the sensor
+// exists but reads nothing, such as the GPU temperature of a laptop without a discrete GPU.
+func winASUSTemp(v uint32) (float64, bool) {
+	if v>>16 != 1 {
+		return 0, false
+	}
+	t := v & 0xFFFF
+	if t == 0 || t >= 150 {
+		return 0, false
+	}
+	return float64(t), true
+}

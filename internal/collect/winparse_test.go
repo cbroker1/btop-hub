@@ -412,3 +412,27 @@ func TestWinPdhStatus(t *testing.T) {
 		t.Errorf("winPdhNotReady")
 	}
 }
+
+func TestWinASUSTemp(t *testing.T) {
+	cases := []struct {
+		v    uint32
+		want float64
+		ok   bool
+	}{
+		{0x0001002F, 47, true}, // Z13 at idle
+		{0x00010025, 37, true},
+		{0x00010095, 149, true},
+		{0x00010096, 0, false}, // 150 °C: not a plausible reading
+		{0x00010000, 0, false}, // present but reads 0 (no discrete GPU)
+		{0xFFFFFFFE, 0, false}, // unsupported device
+		{0x00000000, 0, false}, // older firmware: unsupported
+		{0x0000002F, 0, false}, // value without the presence bit
+		{0x0003002F, 0, false}, // other status bits set: not a plain temperature
+	}
+	for _, c := range cases {
+		got, ok := winASUSTemp(c.v)
+		if got != c.want || ok != c.ok {
+			t.Errorf("winASUSTemp(0x%08X) = %v, %v; want %v, %v", c.v, got, ok, c.want, c.ok)
+		}
+	}
+}

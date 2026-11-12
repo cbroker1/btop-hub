@@ -3,8 +3,8 @@
 package collect
 
 // The Windows collector. Everything is read from kernel interfaces, documented Win32
-// APIs, one long-lived PDH query and long-lived NVML handles: no WMI, no child processes,
-// no cgo. Per-sample output buffers live in the collector (heap memory, reused every
+// APIs, one long-lived PDH query, long-lived NVML and ADL handles and, on ASUS laptops, the
+// firmware's ATK device: no WMI, no child processes, no cgo. Per-sample output buffers live in the collector (heap memory, reused every
 // second); calls into Windows either go through x/sys wrappers with typed pointers to that
 // memory or through syscall.SyscallN with the pointer conversion inline in the call.
 
@@ -42,7 +42,7 @@ const (
 // nothing for them.
 const (
 	winSrcCPUFreq  = "PDH " + winCtrFreq + " × % Processor Performance / 100"
-	winSrcCPUTemp  = "none: Windows exposes no CPU temperature without a kernel driver"
+	winSrcCPUTemp  = "ASUS ATK ACPI device (" + winATKPath + ", DSTS 0x00120094): the firmware's CPU temperature, as Armoury Crate shows it"
 	winSrcMemUsed  = "GlobalMemoryStatusEx (total, used = total − available)"
 	winSrcMemFree  = "PDH " + winCtrMemFree + " (free)"
 	winSrcDiskIO   = `PDH \PhysicalDisk(_Total)\Disk Read Bytes/sec + Disk Write Bytes/sec`
@@ -110,6 +110,9 @@ type winCollector struct {
 	ctrMemFree     uintptr
 	ctrDiskRead    uintptr
 	ctrDiskWrite   uintptr
+
+	// CPU temperature when ADL does not report it: the ASUS ATK device
+	atk *winATK
 
 	// ACPI thermal zones: a separate query, collected only for Report
 	therm    *winPdhQuery
@@ -209,9 +212,15 @@ func New() (Collector, error) {
 	c.guard("initDisk", func(why string) { c.setSource("disk_space", why) }, c.initDisk)
 	c.guard("diskModel", nil, c.refreshDiskModel) // first try here so --probe notes show it
 	c.guard("initPower", func(why string) { c.setSource("battery", why) }, c.initPower)
-	if !c.info.HasTemp { // ADL may have found the APU's CPU temperature
-		c.setSource("cpu_temp", winSrcCPUTemp)
-	}
+	c.guard("initCPUTemp", func(why string) { // after initGPUs (ADL) and initDisk (haveIoctl)
+		if c.atk != nil {
+			c.atk.close()
+			c.atk, c.info.HasTemp = nil, false
+		}
+		if !c.info.HasTemp {
+			c.setSource("cpu_temp", why)
+		}
+	}, c.initCPUTemp)
 	if c.haveTick {
 		c.setSource("uptime", winSrcUptime)
 	} else {
@@ -318,6 +327,9 @@ func (c *winCollector) collect(s *proto.Sample, now time.Time) {
 	case len(c.gpus) > 0:
 		c.timer.Measure("gpu_pdh", func() { s.GPU = c.sampleGPUs() })
 	}
+	if c.atk != nil {
+		c.timer.Measure("cpu_temp", func() { c.sampleCPUTemp(s) })
+	}
 }
 
 func (c *winCollector) Report() Report {
@@ -356,6 +368,9 @@ func (c *winCollector) Close() {
 	}
 	if c.adl != nil {
 		c.adl.close()
+	}
+	if c.atk != nil {
+		c.atk.close()
 	}
 }
 
@@ -573,6 +588,48 @@ func winCoreCount() (int, error) {
 		return 0, fmt.Errorf("returned %d bytes into %d", n, len(buf))
 	}
 	return winCountCores(buf[:n])
+}
+
+// initCPUTemp finds the CPU temperature when AMD's driver library has not (it reports one only
+// on some APUs): ASUS laptops give it through their firmware's ATK device. Windows itself has no
+// CPU temperature, and on other machines reading one takes a kernel driver.
+func (c *winCollector) initCPUTemp() {
+	if c.info.HasTemp {
+		return // ADL TEMPERATURE_CPU, see initGPUs
+	}
+	var why []string
+	if c.adl != nil {
+		why = append(why, "AMD ADL reports no CPU temperature for this GPU")
+	}
+	if !c.haveIoctl {
+		why = append(why, "kernel32 lacks CreateFileW/DeviceIoControl")
+	} else if a, raw, w := winOpenATK(); a != nil {
+		t, _ := winASUSTemp(raw)
+		c.atk = a
+		c.info.HasTemp = true
+		c.setSource("cpu_temp", winSrcCPUTemp)
+		c.note("cpu_temp", fmt.Sprintf("cpu temperature: ASUS ATK DSTS 0x%08X = 0x%08X (%.0f °C)", winATKDevCPUTemp, raw, t))
+		return
+	} else {
+		why = append(why, w)
+	}
+	c.setSource("cpu_temp", "none: "+strings.Join(why, "; ")+
+		"; without firmware support, Windows needs a kernel driver to read the CPU temperature")
+}
+
+func (c *winCollector) sampleCPUTemp(s *proto.Sample) {
+	raw, err := c.atk.read()
+	if err != nil {
+		c.setSource("cpu_temp", "none: ASUS ATK device: DSTS: "+err.Error())
+		return
+	}
+	t, ok := winASUSTemp(raw)
+	if !ok {
+		c.setSource("cpu_temp", fmt.Sprintf("none: the ASUS ATK device answered 0x%08X", raw))
+		return
+	}
+	s.CPUTemp = proto.F64(t)
+	c.setSource("cpu_temp", winSrcCPUTemp)
 }
 
 // ---------------------------------------------------------------------------------------

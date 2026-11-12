@@ -105,8 +105,12 @@ tools/install-windows-agent.sh --uninstall tablet
 ```
 
 AMD GPUs (such as the Z13's Radeon 8060S) are read through AMD's driver library, so they show load, clock,
-temperature, power and the exact VRAM split, as [btop4win](https://github.com/aristocratos/btop4win) does. Windows has no CPU temperature without a kernel driver, so
-that readout says "no temp sensor".
+temperature, power and the exact VRAM split, as [btop4win](https://github.com/aristocratos/btop4win) does.
+
+Windows itself has no CPU temperature. On ASUS laptops (here the Z13) the agent reads the firmware's own, from the
+ATK ACPI device that Armoury Crate and G-Helper read it from (about 0.5 ms of CPU a second), and an AMD APU whose
+driver reports one gives it through AMD's library. Elsewhere it takes a kernel driver, so the readout says "no temp
+sensor".
 
 **Linux** (here the GPU rig, which also runs the hub): the agent runs on the host as a systemd service, so the hub's
 container needs no host or GPU access.
@@ -223,8 +227,10 @@ curl -fsSLo btop-agent http://192.168.1.74:28677/dist/btop-agent-linux-amd64 && 
   I/O and CPU speed, the default-route adapter's counters, NVML for NVIDIA cards, and AMD's driver library
   (`atiadlxx.dll`, the same source LibreHardwareMonitor and btop4win use) for AMD GPUs: load, clocks,
   temperature, power and the exact VRAM split. DXGI and the Windows GPU counters are only the fallback for other
-  GPUs. No WMI, and no process is started per sample. CPU temperature: k10temp on Linux; Windows has none without a
-  kernel driver, so it reads "no temp sensor" there (as in btop4win, whose sensor driver Defender blocks).
+  GPUs. No WMI, and no process is started per sample. CPU temperature: k10temp on Linux. Windows has none of its
+  own: the agent uses AMD's library where an APU reports it, or on ASUS laptops the ATK ACPI device (`\\.\ATKACPI`,
+  device 0x00120094: the firmware's CPU temperature, as Armoury Crate and G-Helper show it). Anywhere else it
+  takes a kernel driver (btop4win's is blocked by Defender), so the readout says "no temp sensor" there.
 
 ## Security
 

@@ -9,14 +9,19 @@
 #   -Name   name shown on the hub, at most 48 bytes (required)
 #   -Id     machine id: a-z, 0-9 and -, at most 32 characters (default: made from -Name)
 #   -Hub    hub URL (default: the hub this script came from)
+#   -CpuTemp  read the CPU temperature through the PawnIO driver (AMD Ryzen; install PawnIO
+#           first: winget install namazso.PawnIO, or https://pawnio.eu). PawnIO admits only
+#           SYSTEM and Administrators, so the service then runs as LocalSystem, with every
+#           privilege removed except the two it needs. Leave it out where the agent finds the
+#           temperature without a driver (ASUS laptops) or you do not want a driver.
 #
 # It downloads btop-agent.exe from the hub and checks its SHA-256, installs it in
 # "%ProgramFiles%\btop-agent", writes "%ProgramData%\btop-agent\agent.json" (it holds the token,
 # so only SYSTEM, Administrators and LocalService can read it), and registers the "btop-agent"
-# service: runs as NT AUTHORITY\LocalService, starts automatically (delayed) at boot, restarts
-# after failures, logs to "%ProgramData%\btop-agent\agent.log". Then it runs the agent once with
-# --probe and prints what it measured. Running it again upgrades in place (binary, token, name,
-# id).
+# service: runs as NT AUTHORITY\LocalService (LocalSystem with -CpuTemp), starts automatically
+# (delayed) at boot, restarts after failures, logs to "%ProgramData%\btop-agent\agent.log". Then
+# it runs the agent once with --probe and prints what it measured. Running it again upgrades in
+# place (binary, token, name, id, and the account: with or without -CpuTemp).
 #
 # Uninstall, also from an elevated Windows PowerShell:
 #
@@ -29,7 +34,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Token,
     [Parameter(Mandatory = $true)][string]$Name,
     [string]$Id = '',
-    [string]$Hub = '__HUB_URL__'
+    [string]$Hub = '__HUB_URL__',
+    [switch]$CpuTemp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,6 +44,17 @@ $ServiceName = 'btop-agent'
 $ProcessName = 'btop-agent'
 $AgentSha256 = '__AGENT_SHA256__'
 $LocalService = 'NT AUTHORITY\LocalService'
+# With -CpuTemp: the account, and the only privileges the service keeps (traverse checking, and
+# creating the Global\Access_PCI mutex that programs reading the CPU's registers share).
+$LocalSystem = 'LocalSystem'
+$SystemPrivileges = 'SeChangeNotifyPrivilege/SeCreateGlobalPrivilege'
+if ($CpuTemp) {
+    $ServiceAccount = $LocalSystem
+    $ServiceAccountSid = 'S-1-5-18'
+} else {
+    $ServiceAccount = $LocalService
+    $ServiceAccountSid = 'S-1-5-19'
+}
 $System32 = Join-Path -Path $env:SystemRoot -ChildPath 'System32'
 $ScExe = Join-Path -Path $System32 -ChildPath 'sc.exe'
 $IcaclsExe = Join-Path -Path $System32 -ChildPath 'icacls.exe'
@@ -151,6 +168,35 @@ function Stop-AgentProcess {
     }
 }
 
+# Returns the CPU temperature source the service logged at or after $Since, waiting up to
+# $Seconds for it, or $null. Log lines start with the local time, "yyyy/MM/dd HH:mm:ss"; the
+# agent may have rotated the log when it started, so lines are matched by time, not position.
+function Get-ServiceTempSource {
+    param([datetime]$Since, [int]$Seconds)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ($true) {
+        try {
+            $lines = @(Get-Content -LiteralPath $LogPath -Tail 400 -Encoding UTF8 -ErrorAction Stop)
+        } catch {
+            $lines = @()
+        }
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            if ([string]$lines[$i] -notmatch '^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) source cpu_temp: (.*)$') {
+                continue
+            }
+            $stamp = [datetime]::ParseExact($Matches[1], 'yyyy/MM/dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+            if ($stamp -ge $Since) {
+                return $Matches[2]
+            }
+            break
+        }
+        if ((Get-Date) -ge $deadline) {
+            return $null
+        }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 # Runs the agent once as the current user and prints its report. Returns its exit code.
 function Invoke-Probe {
     $ErrorActionPreference = 'Continue'
@@ -217,6 +263,23 @@ if ($Id -cnotmatch '^[a-z0-9][a-z0-9-]{0,31}\z') {
 $expectedSha256 = $AgentSha256.Trim().ToLowerInvariant()
 if ($expectedSha256 -cnotmatch '^[0-9a-f]{64}\z') {
     throw ('The hub gave no checksum for btop-agent.exe ("{0}"): its dist directory has no Windows agent. Put btop-agent.exe there, restart the hub, and copy the install command from the hub again.' -f $AgentSha256)
+}
+if ($CpuTemp) {
+    # PawnIO's AMDFamily17 module reads AMD family 17h (Zen) to 1Ah (Zen 5). The registry gives
+    # the family in decimal: "AMD64 Family 26 Model 68 Stepping 0".
+    $cpuKey = Get-ItemProperty -LiteralPath 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -ErrorAction SilentlyContinue
+    $cpuVendor = [string]$cpuKey.VendorIdentifier
+    $cpuIdentifier = [string]$cpuKey.Identifier
+    $cpuFamily = -1
+    if ($cpuIdentifier -match '\bFamily (\d+)\b') {
+        $cpuFamily = [int]$Matches[1]
+    }
+    if ($cpuVendor -ne 'AuthenticAMD' -or $cpuFamily -lt 0x17 -or $cpuFamily -gt 0x1A) {
+        throw ('-CpuTemp reads AMD Ryzen CPUs (family 17h to 1Ah) only, and this is "{0} {1}". Run the command again without -CpuTemp.' -f $cpuVendor, $cpuIdentifier)
+    }
+    if (-not (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\PawnIO')) {
+        throw '-CpuTemp reads the CPU temperature through the PawnIO driver, which is not installed. Install it first (winget install namazso.PawnIO, or the installer from https://pawnio.eu), then run this command again.'
+    }
 }
 
 # The 64-bit Program Files, even if this is the 32-bit Windows PowerShell.
@@ -327,18 +390,20 @@ Invoke-Native -FilePath $IcaclsExe -ArgumentList @($ConfigPath, '/inheritance:r'
 
 # ---- Service -----------------------------------------------------------------------------------
 
-Write-Step 'Registering the btop-agent service'
-# New-Service passes the quoted path through intact. The account is set here, with an empty
-# password, because Windows PowerShell 5.1 drops an empty "" argument to sc.exe (password= "").
-$noPassword = New-Object -TypeName System.Security.SecureString
-$credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $LocalService, $noPassword
+Write-Step ('Registering the btop-agent service (runs as {0})' -f $ServiceAccount)
+# New-Service passes the quoted path through intact. LocalService is set here, with an empty
+# password, because Windows PowerShell 5.1 drops an empty "" argument to sc.exe (password= "");
+# without -Credential, New-Service registers the service as LocalSystem.
 $serviceArgs = @{
     Name           = $ServiceName
     DisplayName    = 'btop hub agent'
     Description    = 'Streams this machine''s CPU, GPU, memory, disk and network activity to the btop hub.'
     BinaryPathName = ('"{0}" --config "{1}"' -f $AgentExe, $ConfigPath)
     StartupType    = 'Automatic'
-    Credential     = $credential
+}
+if (-not $CpuTemp) {
+    $noPassword = New-Object -TypeName System.Security.SecureString
+    $serviceArgs.Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $LocalService, $noPassword
 }
 try {
     New-Service @serviceArgs | Out-Null
@@ -347,18 +412,25 @@ try {
 }
 $serviceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $ServiceName
 $account = [string](Get-ItemProperty -LiteralPath $serviceKey -Name 'ObjectName').ObjectName
-$isLocalService = (($account -replace '\s', '') -eq 'NTAUTHORITY\LocalService')
-if (-not $isLocalService) {
+$accountName = $account -replace '\s', ''
+if ($accountName -eq 'LocalSystem') {
+    $accountSid = 'S-1-5-18' # the service manager's name for SYSTEM, which NTAccount cannot translate
+} elseif ($accountName -eq 'NTAUTHORITY\LocalService') {
+    $accountSid = 'S-1-5-19'
+} else {
     # In case the name was stored localized: compare the account's SID instead.
     try {
         $accountSid = (New-Object -TypeName System.Security.Principal.NTAccount -ArgumentList $account).Translate([System.Security.Principal.SecurityIdentifier]).Value
-        $isLocalService = ($accountSid -eq 'S-1-5-19')
     } catch {
-        $isLocalService = $false
+        $accountSid = ''
     }
 }
-if (-not $isLocalService) {
-    throw ('The btop-agent service was registered to run as "{0}" instead of {1}; not starting it.' -f $account, $LocalService)
+if ($accountSid -ne $ServiceAccountSid) {
+    throw ('The btop-agent service was registered to run as "{0}" instead of {1}; not starting it.' -f $account, $ServiceAccount)
+}
+if ($CpuTemp) {
+    # LocalSystem holds every privilege; the service manager starts the agent with these only.
+    Invoke-Native -FilePath $ScExe -ArgumentList @('privs', $ServiceName, $SystemPrivileges)
 }
 Invoke-Native -FilePath $ScExe -ArgumentList @('config', $ServiceName, 'start=', 'delayed-auto')
 Invoke-Native -FilePath $ScExe -ArgumentList @('failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/5000/restart/60000')
@@ -367,6 +439,8 @@ Invoke-Native -FilePath $ScExe -ArgumentList @('failureflag', $ServiceName, '1')
 
 Write-Step 'Starting the service'
 $startError = $null
+$serviceStart = Get-Date
+$serviceStart = $serviceStart.AddTicks(-($serviceStart.Ticks % [TimeSpan]::TicksPerSecond)) # log times have whole seconds
 try {
     (Get-Service -Name $ServiceName).Start()
 } catch {
@@ -399,6 +473,17 @@ if (-not $running) {
     throw 'btop-agent is installed, but its service is not running; see the status and log above.'
 }
 Write-Host '    Running.'
+if ($CpuTemp) {
+    # The probe below runs as you, an administrator. This is what the service itself found.
+    $tempSource = Get-ServiceTempSource -Since $serviceStart -Seconds 10
+    if (-not $tempSource) {
+        Write-Warning -Message ('The service has not logged its CPU temperature source yet; look for "source cpu_temp" in ' + $LogPath + '.')
+    } elseif ($tempSource -like 'none*') {
+        Write-Warning -Message ('The service found no CPU temperature: ' + $tempSource)
+    } else {
+        Write-Host ('    CPU temperature: ' + $tempSource)
+    }
+}
 
 # ---- Probe and summary -------------------------------------------------------------------------
 
@@ -411,7 +496,10 @@ if ($probeExit -ne 0) {
 $serviceStatus = [string](Get-Service -Name $ServiceName).Status
 Write-Host ''
 Write-Host 'btop-agent is installed.' -ForegroundColor Green
-Write-Host ('  Service : {0} is {1}; starts automatically (delayed) at boot as {2}' -f $ServiceName, $serviceStatus, $LocalService)
+Write-Host ('  Service : {0} is {1}; starts automatically (delayed) at boot as {2}' -f $ServiceName, $serviceStatus, $ServiceAccount)
+if ($CpuTemp) {
+    Write-Host ('  CPU temp: through PawnIO; the service keeps only {0}' -f ($SystemPrivileges -replace '/', ' and '))
+}
 Write-Host ('  Machine : {0} (id {1})' -f $Name, $Id)
 Write-Host ('  Hub     : {0}' -f $Hub)
 Write-Host ('  Program : {0}' -f $AgentExe)

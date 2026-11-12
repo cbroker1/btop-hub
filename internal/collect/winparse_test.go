@@ -436,3 +436,66 @@ func TestWinASUSTemp(t *testing.T) {
 		}
 	}
 }
+
+func TestWinZenTctl(t *testing.T) {
+	reg := func(eighths uint32, flags uint32) uint32 { return eighths<<21 | flags }
+	cases := []struct {
+		v    uint32
+		want float64
+		ok   bool
+	}{
+		{reg(45*8+1, 0), 45.125, true},    // plain Tctl
+		{reg(94*8+4, 0x3FF), 94.5, true},  // low bits are not part of the value
+		{reg((49+40)*8, 1<<19), 40, true}, // range select: -49 °C offset
+		{reg((49+40)*8, 3<<16), 40, true}, // both Tj-select bits: same offset
+		{reg((49+40)*8, 1<<16), 89, true}, // one Tj-select bit alone: no offset
+		{reg(30*8, 1<<19), 0, false},      // offset below zero: not a reading
+		{reg(150*8, 0), 0, false},         // 150 °C: implausible
+		{0, 0, false},                     // failed read
+		{0xFFFFFFFF, 0, false},            // failed read
+	}
+	for _, c := range cases {
+		got, ok := winZenTctl(c.v)
+		if got != c.want || ok != c.ok {
+			t.Errorf("winZenTctl(0x%08X) = %v, %v; want %v, %v", c.v, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestWinAMDZen(t *testing.T) {
+	cases := []struct {
+		vendor, id string
+		want       bool
+	}{
+		{"AuthenticAMD", "AMD64 Family 26 Model 68 Stepping 0", true},  // Ryzen 9 9950X3D (1Ah)
+		{"AuthenticAMD", "AMD64 Family 26 Model 112 Stepping 0", true}, // Ryzen AI Max+ 395
+		{"AuthenticAMD", "AMD64 Family 23 Model 113 Stepping 0", true}, // Zen 2 (17h)
+		{"AuthenticAMD", "AMD64 Family 25 Model 97 Stepping 2", true},  // Zen 4 (19h)
+		{"AuthenticAMD", "AMD64 Family 22 Model 48 Stepping 1", false}, // 16h, before Zen
+		{"AuthenticAMD", "AMD64 Family 27 Model 0 Stepping 0", false},  // a family the module does not know
+		{"GenuineIntel", "Intel64 Family 6 Model 183 Stepping 1", false},
+		{"AuthenticAMD", "AMD64 Family x Model 1", false},
+		{"AuthenticAMD", "", false},
+	}
+	for _, c := range cases {
+		if got := winAMDZen(c.vendor, c.id); got != c.want {
+			t.Errorf("winAMDZen(%q, %q) = %v, want %v", c.vendor, c.id, got, c.want)
+		}
+	}
+}
+
+func TestWinPawnIOCall(t *testing.T) {
+	b, err := winPawnIOCall("ioctl_read_smn", winZenTctlSMN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != 40 || string(b[:14]) != "ioctl_read_smn" || b[14] != 0 || b[31] != 0 ||
+		binary.LittleEndian.Uint64(b[32:]) != 0x00059800 {
+		t.Errorf("winPawnIOCall = % X", b)
+	}
+	for _, bad := range []string{"", strings.Repeat("x", 32), "a\x00b"} {
+		if _, err := winPawnIOCall(bad); err == nil {
+			t.Errorf("winPawnIOCall(%q) accepted", bad)
+		}
+	}
+}

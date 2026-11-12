@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -694,4 +695,57 @@ func winASUSTemp(v uint32) (float64, bool) {
 		return 0, false
 	}
 	return float64(t), true
+}
+
+// ---------------------------------------------------------------------------------------
+// AMD CPU temperature through PawnIO
+
+// winZenTctlSMN is THM_TCON_CUR_TMP, the System Management Network register where AMD CPUs
+// of family 17h (Zen) to 1Ah (Zen 5) keep their control temperature, Tctl.
+const winZenTctlSMN = 0x00059800
+
+// winZenTctl decodes THM_TCON_CUR_TMP as Linux's k10temp does: bits 31:21 are the temperature
+// in 1/8 °C, and with the range-select bit 19 set, or both Tj-select bits 17:16 set, the scale
+// starts at -49 °C. An all-zero or all-one register (a failed read) gives no temperature.
+func winZenTctl(v uint32) (float64, bool) {
+	if v == 0 || v == 0xFFFFFFFF {
+		return 0, false
+	}
+	t := float64(v>>21) / 8
+	if v&(1<<19) != 0 || v&(3<<16) == 3<<16 {
+		t -= 49
+	}
+	if t <= 0 || t >= 150 {
+		return 0, false
+	}
+	return t, true
+}
+
+// winAMDZen reports whether the processor is an AMD CPU of family 17h to 1Ah, the ones
+// PawnIO's AMDFamily17 module reads. vendor and identifier are the VendorIdentifier and
+// Identifier values of HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0, such as
+// "AuthenticAMD" and "AMD64 Family 26 Model 68 Stepping 0" (the family in decimal).
+func winAMDZen(vendor, identifier string) bool {
+	f := strings.Fields(identifier)
+	for i := 0; i+1 < len(f); i++ {
+		if strings.EqualFold(f[i], "Family") {
+			n, err := strconv.Atoi(f[i+1])
+			return err == nil && vendor == "AuthenticAMD" && n >= 0x17 && n <= 0x1A
+		}
+	}
+	return false
+}
+
+// winPawnIOCall builds the input of PawnIO's IOCTL_PIO_EXECUTE_FN: the module function's name,
+// NUL-padded to 32 bytes, then its arguments as little-endian 64-bit words.
+func winPawnIOCall(fn string, args ...uint64) ([]byte, error) {
+	if fn == "" || len(fn) >= 32 || strings.IndexByte(fn, 0) >= 0 {
+		return nil, fmt.Errorf("bad PawnIO function name %q", fn)
+	}
+	b := make([]byte, 32+8*len(args))
+	copy(b, fn)
+	for i, a := range args {
+		binary.LittleEndian.PutUint64(b[32+8*i:], a)
+	}
+	return b, nil
 }

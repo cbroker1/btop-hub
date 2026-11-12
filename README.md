@@ -86,8 +86,8 @@ is enough; nothing else is installed):
 
 It downloads `btop-agent.exe` from the hub, checks its SHA-256, installs it in `C:\Program Files\btop-agent`, stores
 the token in `C:\ProgramData\btop-agent\agent.json` (readable only by SYSTEM, Administrators and the service), and
-registers the `btop-agent` service: automatic (delayed) start, runs as LocalService, below-normal priority,
-restarts on failure. It ends by printing a probe (one sample and where each value came from); paste that back if a
+registers the `btop-agent` service: automatic (delayed) start, runs as LocalService (LocalSystem with
+[`-CpuTemp`](#cpu-temperature-on-windows)), below-normal priority, restarts on failure. It ends by printing a probe (one sample and where each value came from); paste that back if a
 pane looks wrong. Re-running upgrades in place. To remove it:
 
 ```powershell
@@ -100,17 +100,34 @@ shown). The first argument is an ssh destination, such as a `Host` from `~/.ssh/
 
 ```sh
 tools/install-windows-agent.sh tablet Z13
-tools/install-windows-agent.sh gamingrig "Gaming rig"
+tools/install-windows-agent.sh --cpu-temp gamingrig "Gaming rig"    # -CpuTemp, see below
 tools/install-windows-agent.sh --uninstall tablet
 ```
 
 AMD GPUs (such as the Z13's Radeon 8060S) are read through AMD's driver library, so they show load, clock,
 temperature, power and the exact VRAM split, as [btop4win](https://github.com/aristocratos/btop4win) does.
 
-Windows itself has no CPU temperature. On ASUS laptops (here the Z13) the agent reads the firmware's own, from the
-ATK ACPI device that Armoury Crate and G-Helper read it from (about 0.5 ms of CPU a second), and an AMD APU whose
-driver reports one gives it through AMD's library. Elsewhere it takes a kernel driver, so the readout says "no temp
-sensor".
+#### CPU temperature on Windows
+
+Windows has no API for the CPU temperature; tools such as HWiNFO load a kernel driver of their own to read it. The
+agent finds it without one where the firmware or a driver already offers it: on ASUS laptops (here the Z13) from
+the ATK ACPI device that Armoury Crate and G-Helper read (about 0.5 ms of CPU a second), and on AMD APUs whose
+graphics driver reports it.
+
+On an AMD Ryzen desktop (here the gaming rig) it can read the CPU's own sensor, Tctl (what HWiNFO shows as "CPU
+(Tctl/Tdie)"), through [PawnIO](https://pawnio.eu): the small signed driver LibreHardwareMonitor and FanControl use,
+which runs only signed modules, each limited to its job. PawnIO admits only SYSTEM and Administrators, so this is
+opt-in: install PawnIO, then run the install command again with `-CpuTemp`. The service then runs as LocalSystem
+with every privilege removed except the two it uses (`SeChangeNotifyPrivilege`, `SeCreateGlobalPrivilege`):
+
+```powershell
+winget install namazso.PawnIO
+& ([scriptblock]::Create((New-Object Net.WebClient).DownloadString('http://192.168.1.74:28677/install.ps1'))) -Token 'TOKEN' -Name 'Gaming rig' -CpuTemp
+```
+
+The installer refuses `-CpuTemp` when PawnIO is missing or the CPU is one its module does not read (Intel, or AMD
+before Zen), and prints the temperature source the service itself found. Running the install command again
+without `-CpuTemp` goes back to LocalService. Anywhere the agent finds no source, the readout says "no temp sensor".
 
 **Linux** (here the GPU rig, which also runs the hub): the agent runs on the host as a systemd service, so the hub's
 container needs no host or GPU access.
@@ -228,9 +245,12 @@ curl -fsSLo btop-agent http://192.168.1.74:28677/dist/btop-agent-linux-amd64 && 
   (`atiadlxx.dll`, the same source LibreHardwareMonitor and btop4win use) for AMD GPUs: load, clocks,
   temperature, power and the exact VRAM split. DXGI and the Windows GPU counters are only the fallback for other
   GPUs. No WMI, and no process is started per sample. CPU temperature: k10temp on Linux. Windows has none of its
-  own: the agent uses AMD's library where an APU reports it, or on ASUS laptops the ATK ACPI device (`\\.\ATKACPI`,
-  device 0x00120094: the firmware's CPU temperature, as Armoury Crate and G-Helper show it). Anywhere else it
-  takes a kernel driver (btop4win's is blocked by Defender), so the readout says "no temp sensor" there.
+  own: the agent uses AMD's library where an APU reports it, on ASUS laptops the ATK ACPI device (`\\.\ATKACPI`,
+  device 0x00120094: the firmware's CPU temperature, as Armoury Crate and G-Helper show it), and with `-CpuTemp`
+  on AMD Ryzen CPUs (family 17h to 1Ah) the PawnIO driver's AMDFamily17 module, which reads Tctl from SMN register
+  0x59800 as Linux's k10temp does: one IOCTL a second, made while holding the `Access_PCI` mutex that programs
+  reading those registers share. The module is embedded in the agent as published, signed
+  (`internal/collect/pawnio`, LGPL-2.1).
 
 ## Security
 
@@ -241,6 +261,9 @@ curl -fsSLo btop-agent http://192.168.1.74:28677/dist/btop-agent-linux-amd64 && 
   `no-new-privileges`, a 64 MB memory limit, a PID limit and a health check. Its only writable path is the
   `hub-data` volume (token and the list of known machines).
 - Install scripts verify the agent's SHA-256 before installing it.
+- Windows agents run as LocalService. Only with `-CpuTemp` (for PawnIO, which admits only SYSTEM and
+  Administrators) do they run as LocalSystem, keeping just `SeChangeNotifyPrivilege` and
+  `SeCreateGlobalPrivilege`; the installer refuses it without PawnIO or on a CPU PawnIO's module does not read.
 
 ## Resource use
 
@@ -288,7 +311,7 @@ machine are in [`tools/lightshow/README.md`](tools/lightshow/README.md).
 |---|---|
 | `cmd/hub`, `internal/hub` | The hub |
 | `cmd/agent`, `internal/agent` | The agent: sampling loop, ring buffer, uplink, probe |
-| `internal/collect` | Metric sources per OS, the NVIDIA helper and the simulator |
+| `internal/collect` | Metric sources per OS, the NVIDIA helper and the simulator; `pawnio/` holds the signed PawnIO module the Windows agent embeds (LGPL-2.1, see its `NOTICE`) |
 | `internal/nvml` | Minimal NVML binding (no cgo) |
 | `internal/platform` | Priority, self-measurement and the Windows service wrapper |
 | `web` | The page (`index.html`, `app.js`, `style.css`) and the JetBrains Mono subset (OFL, see `web/fonts/OFL.txt`) |

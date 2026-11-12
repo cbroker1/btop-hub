@@ -42,7 +42,8 @@ const (
 // nothing for them.
 const (
 	winSrcCPUFreq  = "PDH " + winCtrFreq + " × % Processor Performance / 100"
-	winSrcCPUTemp  = "ASUS ATK ACPI device (" + winATKPath + ", DSTS 0x00120094): the firmware's CPU temperature, as Armoury Crate shows it"
+	winSrcTempATK  = "ASUS ATK ACPI device (" + winATKPath + ", DSTS 0x00120094): the firmware's CPU temperature, as Armoury Crate shows it"
+	winSrcTempPIO  = "PawnIO driver, AMDFamily17 module: Tctl from SMN 0x00059800 (THM_TCON_CUR_TMP)"
 	winSrcMemUsed  = "GlobalMemoryStatusEx (total, used = total − available)"
 	winSrcMemFree  = "PDH " + winCtrMemFree + " (free)"
 	winSrcDiskIO   = `PDH \PhysicalDisk(_Total)\Disk Read Bytes/sec + Disk Write Bytes/sec`
@@ -111,8 +112,11 @@ type winCollector struct {
 	ctrDiskRead    uintptr
 	ctrDiskWrite   uintptr
 
-	// CPU temperature when ADL does not report it: the ASUS ATK device
-	atk *winATK
+	// CPU temperature when ADL does not report it: the ASUS ATK device, or PawnIO
+	cpuVendor string // registry VendorIdentifier
+	cpuIdent  string // registry Identifier
+	atk       *winATK
+	pio       *winPawnIO
 
 	// ACPI thermal zones: a separate query, collected only for Report
 	therm    *winPdhQuery
@@ -216,6 +220,10 @@ func New() (Collector, error) {
 		if c.atk != nil {
 			c.atk.close()
 			c.atk, c.info.HasTemp = nil, false
+		}
+		if c.pio != nil {
+			c.pio.close()
+			c.pio, c.info.HasTemp = nil, false
 		}
 		if !c.info.HasTemp {
 			c.setSource("cpu_temp", why)
@@ -327,7 +335,7 @@ func (c *winCollector) collect(s *proto.Sample, now time.Time) {
 	case len(c.gpus) > 0:
 		c.timer.Measure("gpu_pdh", func() { s.GPU = c.sampleGPUs() })
 	}
-	if c.atk != nil {
+	if c.atk != nil || c.pio != nil {
 		c.timer.Measure("cpu_temp", func() { c.sampleCPUTemp(s) })
 	}
 }
@@ -371,6 +379,9 @@ func (c *winCollector) Close() {
 	}
 	if c.atk != nil {
 		c.atk.close()
+	}
+	if c.pio != nil {
+		c.pio.close()
 	}
 }
 
@@ -465,6 +476,8 @@ func (c *winCollector) initStatic() {
 		c.note("cpu_model", "cpu model: registry: "+err.Error())
 		return
 	}
+	c.cpuVendor, _, _ = k.GetStringValue("VendorIdentifier") // "AuthenticAMD"
+	c.cpuIdent, _, _ = k.GetStringValue("Identifier")        // "AMD64 Family 26 Model 68 Stepping 0"
 	name, _, err := k.GetStringValue("ProcessorNameString")
 	_ = k.Close()
 	if err != nil {
@@ -591,8 +604,8 @@ func winCoreCount() (int, error) {
 }
 
 // initCPUTemp finds the CPU temperature when AMD's driver library has not (it reports one only
-// on some APUs): ASUS laptops give it through their firmware's ATK device. Windows itself has no
-// CPU temperature, and on other machines reading one takes a kernel driver.
+// on some APUs). Windows itself has none: ASUS laptops give it through their firmware's ATK
+// device, and otherwise it takes a kernel driver: PawnIO, for AMD Ryzen CPUs.
 func (c *winCollector) initCPUTemp() {
 	if c.info.HasTemp {
 		return // ADL TEMPERATURE_CPU, see initGPUs
@@ -603,33 +616,64 @@ func (c *winCollector) initCPUTemp() {
 	}
 	if !c.haveIoctl {
 		why = append(why, "kernel32 lacks CreateFileW/DeviceIoControl")
-	} else if a, raw, w := winOpenATK(); a != nil {
+		c.setSource("cpu_temp", "none: "+strings.Join(why, "; "))
+		return
+	}
+	a, raw, w := winOpenATK()
+	if a != nil {
 		t, _ := winASUSTemp(raw)
-		c.atk = a
-		c.info.HasTemp = true
-		c.setSource("cpu_temp", winSrcCPUTemp)
+		c.atk, c.info.HasTemp = a, true
+		c.setSource("cpu_temp", winSrcTempATK)
 		c.note("cpu_temp", fmt.Sprintf("cpu temperature: ASUS ATK DSTS 0x%08X = 0x%08X (%.0f °C)", winATKDevCPUTemp, raw, t))
 		return
-	} else {
-		why = append(why, w)
 	}
-	c.setSource("cpu_temp", "none: "+strings.Join(why, "; ")+
-		"; without firmware support, Windows needs a kernel driver to read the CPU temperature")
+	why = append(why, w)
+	if !winAMDZen(c.cpuVendor, c.cpuIdent) {
+		why = append(why, fmt.Sprintf("PawnIO is used for AMD family 17h-1Ah CPUs only, and this is %q %q", c.cpuVendor, c.cpuIdent))
+		c.setSource("cpu_temp", "none: "+strings.Join(why, "; "))
+		return
+	}
+	p, raw, w := winOpenPawnIO()
+	if p == nil {
+		why = append(why, w)
+		c.setSource("cpu_temp", "none: "+strings.Join(why, "; "))
+		return
+	}
+	t, _ := winZenTctl(raw)
+	c.pio, c.info.HasTemp = p, true
+	c.setSource("cpu_temp", winSrcTempPIO)
+	c.note("cpu_temp", fmt.Sprintf("cpu temperature: PawnIO %s, AMDFamily17 module (PawnIO.Modules 0.2.11), Tctl register 0x%08X = %.3f °C, Access_PCI mutex %s",
+		p.version, raw, t, p.mutexBy))
 }
 
 func (c *winCollector) sampleCPUTemp(s *proto.Sample) {
-	raw, err := c.atk.read()
-	if err != nil {
-		c.setSource("cpu_temp", "none: ASUS ATK device: DSTS: "+err.Error())
+	if c.atk != nil {
+		raw, err := c.atk.read()
+		if err != nil {
+			c.setSource("cpu_temp", "none: ASUS ATK device: DSTS: "+err.Error())
+			return
+		}
+		t, ok := winASUSTemp(raw)
+		if !ok {
+			c.setSource("cpu_temp", fmt.Sprintf("none: the ASUS ATK device answered 0x%08X", raw))
+			return
+		}
+		s.CPUTemp = proto.F64(t)
+		c.setSource("cpu_temp", winSrcTempATK)
 		return
 	}
-	t, ok := winASUSTemp(raw)
+	raw, err := c.pio.readTctl()
+	if err != nil {
+		c.setSource("cpu_temp", "none: PawnIO: "+err.Error())
+		return
+	}
+	t, ok := winZenTctl(raw)
 	if !ok {
-		c.setSource("cpu_temp", fmt.Sprintf("none: the ASUS ATK device answered 0x%08X", raw))
+		c.setSource("cpu_temp", fmt.Sprintf("none: PawnIO: the Tctl register reads 0x%08X", raw))
 		return
 	}
 	s.CPUTemp = proto.F64(t)
-	c.setSource("cpu_temp", winSrcCPUTemp)
+	c.setSource("cpu_temp", winSrcTempPIO)
 }
 
 // ---------------------------------------------------------------------------------------

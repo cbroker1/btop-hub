@@ -1,0 +1,13 @@
+AMDFamily17.bin is the signed AMDFamily17 module of PawnIO.Modules release 0.2.11, unmodified:
+
+  https://github.com/namazso/PawnIO.Modules/releases/tag/0.2.11 (commit 52a7e536dff3e53c96917a28caac5e0fa6510696)
+  release_0_2_11.zip  sha256 43608cb89bc84247fef1368a139013f7d043e17db6d6c8dfc9b46bf0905a81f4
+  AMDFamily17.bin     sha256 dae74615761b78bdf064dfb3e136252ddcc6fc727d88f14738d0e5800d427a91
+
+Its source is AMDFamily17.p in that repository at that commit. It is licensed under the GNU Lesser
+General Public License, version 2.1; COPYING is the license text from the same release.
+
+The Windows agent embeds the module and hands it to the PawnIO driver (https://pawnio.eu), which
+checks its signature and runs it. The agent talks to PawnIO only through the driver's device I/O
+control interface. To update the module, replace both files from a newer release and update this
+note and the release number in internal/collect/windows.go.

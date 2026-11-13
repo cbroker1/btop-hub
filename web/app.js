@@ -589,7 +589,7 @@ function drawPane(m, now) {
       const tot = (info.gpus[gi] || {}).memTotal;
       const vb = G.vram + 2;
       if (tot > 0) for (let c = 0; c < GW; c++) if (gm.cnt[c]) flatCol(c, vb, 2, 0, Math.max(1 / 16, mean(gm, c) / tot), C.hist);
-      ylabel('vram', G.vram + 1, G.vram, G.vram + 2);
+      ylabel((info.gpus[gi] || {}).shared ? 'mem' : 'vram', G.vram + 1, G.vram, G.vram + 2); // <= 4 glyphs fit the gutter
     }
     edgeRules(top, bottom, has);
     ylabel('100', top, top, top + G.util);
@@ -748,13 +748,13 @@ function drawGPU(m, info, s, G) {
     let extra = gs.p != null ? ' · ' + Math.round(gs.p) + ' W' : '';
     if (gs.t != null && gs.t >= ALERT.gpuTempC) { badgeR(REND - glyphs(extra), r + 1, Math.round(gs.t) + '°C'); textR(REND, r + 1, extra, C.dim); }
     else textR(REND, r + 1, (gs.t != null ? Math.round(gs.t) + '°C' : 'n/a') + extra, C.dim);
-    text(RX, r + 2, 'vram', C.dim);
+    text(RX, r + 2, gin.shared ? 'gpu mem' : 'vram', C.dim);
     textR(REND, r + 2, pair(num(gs.m), gin.memTotal || NaN), C.dim);
     return;
   }
   gpuTemp(gs, REND, r + 1);
   if (gs.p != null) {
-    text(RX, r + 2, 'power', C.dim);
+    text(RX, r + 2, gin.shared ? 'package' : 'power', C.dim); // an APU's PPT covers CPU + GPU
     textR(REND, r + 2, Math.round(gs.p) + ' W' + (gs.ps != null ? ' · P' + gs.ps : '') + (gs.f != null ? ' · fan ' + gs.f + '%' : ''), C.dim);
   } else if (gs.ck != null) {
     text(RX, r + 2, 'clock', C.dim);
@@ -765,12 +765,13 @@ function drawGPU(m, info, s, G) {
     textR(REND, r + 3, fit(4, `▲ ${rate(gs.tx)} · ▼ ${rate(gs.rx)}`, `▲ ${rate(gs.tx)} ▼ ${rate(gs.rx)}`), C.dim);
   }
   const v = G.vram - 1, tot = gin.memTotal;
-  text(RX, v, 'VRAM', C.text, true);
+  text(RX, v, gin.shared ? 'GPU mem' : 'VRAM', C.text, true);
   textR(REND, v, pair(num(gs.m), tot > 0 ? tot : NaN), C.text);
   bar(RX, REND, v + 1, tot > 0 && gs.m != null ? [[gs.m / tot, C.fill]] : []);
   const inUse = tot > 0 && gs.m != null ? pct(gs.m / tot) + ' in use' : 'n/a';
   text(RX, v + 2, inUse, C.dim);
   if (gs.ck != null && gs.mk != null) textR(REND, v + 2, fit(glyphs(inUse), `clocks ${gs.ck} / ${gs.mk} MHz`, `${gs.ck} / ${gs.mk} MHz`), C.dim);
+  else if (gs.ck != null && gs.p != null) textR(REND, v + 2, fit(glyphs(inUse), `clock ${gs.ck} MHz`, `${gs.ck} MHz`), C.dim); // without power, row r + 2 already shows it
 }
 
 function drawMem(info, s, r) {
@@ -1053,14 +1054,16 @@ const DETAIL = {
   gpu(m, info, s, i0, g) {
     const gin = (info.gpus || [])[g] || {}, gs = (s.g && s.g[g]) || {};
     const tot = gin.memTotal > 0 ? gin.memTotal : NaN;
+    const memLabel = gin.shared ? 'GPU memory used' : 'VRAM used';
+    const powerLabel = gin.shared ? 'package power (CPU + GPU)' : 'power';
     const ut = over(m, i0, i => m.gu[g][i]), vm = over(m, i0, i => m.gm[g][i]), tp = over(m, i0, i => m.gt[g][i]);
     const pw = over(m, i0, i => m.gp[g][i]), ck = over(m, i0, i => m.gck[g][i]);
     const tx = over(m, i0, i => m.gtx[g][i]), rx = over(m, i0, i => m.grx[g][i]);
     const rows = [
       ['utilisation', pct(gs.u != null ? gs.u / 1000 : NaN), pct(ut.avg), pct(ut.max)],
-      ['VRAM used', ofTotal(num(gs.m), tot), ofTotal(vm.avg, tot), ofTotal(vm.max, tot)],
+      [memLabel, ofTotal(num(gs.m), tot), ofTotal(vm.avg, tot), ofTotal(vm.max, tot)],
       ['temperature', degC(num(gs.t)), degC(tp.avg), degC(tp.max)],
-      ['power', watts(num(gs.p)), watts(pw.avg), watts(pw.max)],
+      [powerLabel, watts(num(gs.p)), watts(pw.avg), watts(pw.max)],
       ['core clock', mhz(num(gs.ck)), mhz(ck.avg), mhz(ck.max)],
       ['memory clock', mhz(num(gs.mk)), '', ''],
       ['performance state', gs.ps != null ? 'P' + gs.ps : 'n/a', '', ''],
@@ -1070,15 +1073,15 @@ const DETAIL = {
     ];
     const strips = [{ label: 'utilisation', scale: 'pct', ramp: 'load', get: i => m.gu[g][i], fmt: pct }];
     if (vm.n) strips.push(tot > 0
-      ? { label: 'VRAM used', scale: 'pct', flat: C.hist, get: i => m.gm[g][i] / tot, fmt: pct }
-      : { label: 'VRAM used', scale: 'zero', flat: C.hist, get: i => m.gm[g][i], fmt: size });
+      ? { label: memLabel, scale: 'pct', flat: C.hist, get: i => m.gm[g][i] / tot, fmt: pct }
+      : { label: memLabel, scale: 'zero', flat: C.hist, get: i => m.gm[g][i], fmt: size });
     if (tp.n) strips.push({ label: 'temperature', scale: 'range', ramp: 'load', get: i => m.gt[g][i], fmt: degC });
-    if (pw.n) strips.push({ label: 'power', scale: 'zero', ramp: 'load', get: i => m.gp[g][i], fmt: watts });
+    if (pw.n) strips.push({ label: powerLabel, scale: 'zero', ramp: 'load', get: i => m.gp[g][i], fmt: watts });
     if (ck.n) strips.push({ label: 'core clock', scale: 'zero', ramp: 'load', get: i => m.gck[g][i], fmt: mhz });
     const vendor = { nvidia: 'NVIDIA', amd: 'AMD', intel: 'Intel' }[gin.vendor] || '';
     return {
       title: (m.G > 1 ? 'GPU ' + g : 'GPU') + (gin.name ? ' · ' + gin.name : ''),
-      sub: [vendor, gin.integrated ? 'integrated' : '', tot > 0 ? size(tot) + ' VRAM' : ''].filter(Boolean).join(' · '),
+      sub: [vendor, gin.integrated ? 'integrated' : '', tot > 0 ? size(tot) + (gin.shared ? ' GPU memory (VRAM + GTT)' : ' VRAM') : ''].filter(Boolean).join(' · '),
       rows, strips,
     };
   },

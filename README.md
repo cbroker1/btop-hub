@@ -16,8 +16,8 @@ once a second and pushes to a hub that runs in Docker on your LAN, and every pan
 - **Tap for details.** Tap or click any part of a pane for an overlay with averages, peaks and one-second charts.
   Pinch to zoom; the panes fill any screen, and there is a full-screen mode.
 - **Small agents for Linux and Windows.** They sample once a second, keep their own last hour and push to the hub
-  over one outbound connection; they never listen on a port. GPUs: NVIDIA through NVML, AMD through ADL, others
-  through DXGI/PDH on Windows.
+  over one outbound connection; they never listen on a port. GPUs: NVIDIA through NVML; AMD through ADL on Windows
+  and the amdgpu driver's sysfs files on Linux; others through DXGI/PDH on Windows.
 - **A small hub.** One Docker image, about 9 MB to pull: `scratch`, non-root, read-only filesystem, no
   capabilities. No database, no outbound requests, and it answers only the networks you allow.
 
@@ -46,8 +46,9 @@ each machine you want on the page, including the hub host if you want to see it;
 agent connects. [Simulated machines](#simulated-machines) fills the page with plausible data if you'd like to see it
 before installing anything.
 
-The examples below use the author's setup: a Linux GPU rig that also runs the hub at `192.168.1.74`, plus a Z13
-tablet and a gaming rig on Windows. Put your own `HUB_BIND:HUB_PORT` in place of `192.168.1.74:28677`.
+The examples below use the author's setup: a Linux GPU rig that also runs the hub at `192.168.1.74`, a Z13 tablet
+on Linux (Ubuntu since 2026-11-13; Windows before that) and a gaming rig on Windows. Put your own
+`HUB_BIND:HUB_PORT` in place of `192.168.1.74:28677`.
 
 ## Settings
 
@@ -77,7 +78,7 @@ line; for a one-off build, `DOCKER_CONFIG=$(mktemp -d) docker compose build` use
 Get the token first: `docker exec btop-hub /hub token`. The commands use the example hub address,
 `192.168.1.74:28677`; put your own `HUB_BIND:HUB_PORT` in its place.
 
-**Windows** (here the gaming rig and the Z13): open **Windows PowerShell as administrator** and run one line (Windows PowerShell 5.1
+**Windows** (here the gaming rig; the Z13 too, until it moved to Linux): open **Windows PowerShell as administrator** and run one line (Windows PowerShell 5.1
 is enough; nothing else is installed):
 
 ```powershell
@@ -95,22 +96,21 @@ pane looks wrong. Re-running upgrades in place. To remove it:
 ```
 
 Or, from the hub host over SSH (the SSH user must be an administrator; the token is read from the hub and never
-shown). The first argument is an ssh destination, such as a `Host` from `~/.ssh/config` (here `tablet` and
-`gamingrig`), the second the pane name:
+shown). The first argument is an ssh destination, such as a `Host` from `~/.ssh/config` (here `gamingrig`), the
+second the pane name:
 
 ```sh
-tools/install-windows-agent.sh tablet Z13
 tools/install-windows-agent.sh --cpu-temp gamingrig "Gaming rig"    # -CpuTemp, see below
-tools/install-windows-agent.sh --uninstall tablet
+tools/install-windows-agent.sh --uninstall gamingrig
 ```
 
-AMD GPUs (such as the Z13's Radeon 8060S) are read through AMD's driver library, so they show load, clock,
+AMD GPUs (such as the Radeon 8060S the Z13 had under Windows) are read through AMD's driver library, so they show load, clock,
 temperature, power and the exact VRAM split, as [btop4win](https://github.com/aristocratos/btop4win) does.
 
 #### CPU temperature on Windows
 
 Windows has no API for the CPU temperature; tools such as HWiNFO load a kernel driver of their own to read it. The
-agent finds it without one where the firmware or a driver already offers it: on ASUS laptops (here the Z13) from
+agent finds it without one where the firmware or a driver already offers it: on ASUS laptops (the Z13, when it ran Windows) from
 the ATK ACPI device that Armoury Crate and G-Helper read (about 0.5 ms of CPU a second), and on AMD APUs whose
 graphics driver reports it.
 
@@ -129,13 +129,22 @@ The installer refuses `-CpuTemp` when PawnIO is missing or the CPU is one its mo
 before Zen), and prints the temperature source the service itself found. Running the install command again
 without `-CpuTemp` goes back to LocalService. Anywhere the agent finds no source, the readout says "no temp sensor".
 
-**Linux** (here the GPU rig, which also runs the hub): the agent runs on the host as a systemd service, so the hub's
-container needs no host or GPU access.
+**Linux** (here the GPU rig, which also runs the hub, and the Z13, on Ubuntu since 2026-11-13): the agent runs on
+the host as a systemd service, so the hub's container needs no host or GPU access.
 
 ```sh
 curl -fsSL http://192.168.1.74:28677/install.sh | sudo sh -s -- --token TOKEN --name "GPU rig"
+curl -fsSL http://192.168.1.74:28677/install.sh | sudo sh -s -- --token TOKEN --name "Z13"
 curl -fsSL http://192.168.1.74:28677/uninstall.sh | sudo sh      # to remove it
 ```
+
+AMD GPUs on Linux are read from the amdgpu driver's sysfs files: load, temperature, power (PPT) and core clock. An
+APU's VRAM is only the firmware carve-out (512 MiB on the Z13 at its BIOS minimum) while the GPU works out of system
+RAM mapped through GTT, so for an integrated AMD GPU the pane shows **GPU mem**: VRAM + GTT, used and total. GTT
+is ordinary system RAM, so it is also counted in the MEM readout: the two overlap and should not be added. An
+integrated GPU is recognised by its `gpu_metrics` table layout (else by a carve-out of 4 GiB or less), and named from
+libdrm's `amdgpu.ids` or the CPU's "w/ Radeon ..." name, since APUs have no `product_name`. Its power is the APU's
+PPT, which covers CPU and GPU together, so the pane labels it "package".
 
 The service runs as a throwaway system user (`DynamicUser`), at nice 10 with idle I/O priority, with the token
 passed as a systemd credential and the filesystem read-only.
@@ -167,7 +176,7 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
 - **CPU.** One half-height row per logical thread, coloured by load from dark (idle) through red and orange to pale
   yellow (busy). Beside it, the busiest threads in descending order (as many as fit beside the strip, 11) and how
   many threads are under 5%.
-- **GPU, memory.** GPU busy on top, VRAM history under it; memory in use, with the OS file cache stacked above.
+- **GPU, memory.** GPU busy on top, GPU memory history under it (VRAM, or VRAM + GTT on a Linux APU, labelled "mem"); memory in use, with the OS file cache stacked above.
 - **Disk, network.** Bytes per second on a fixed log scale (1 KiB/s at the baseline, 1 GiB/s at full height);
   download grows up from the centre line, upload down.
 - **No data** (before boot, asleep, agent stopped) is left blank in the page colour with a thin rule at its edge;
@@ -239,7 +248,9 @@ curl -fsSLo btop-agent http://192.168.1.74:28677/dist/btop-agent-linux-amd64 && 
 - **Hub → page.** `/api/history` returns the hour; `/api/stream` (server-sent events) pushes each new sample. The
   page aggregates the 1-second samples into the 80 columns, redraws once a second, and stops (closing the stream)
   while its tab is hidden.
-- **Sources.** Linux: `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`, `/sys/class/net`, k10temp, and NVIDIA's NVML.
+- **Sources.** Linux: `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`, `/sys/class/net`, k10temp, NVIDIA's NVML, and
+  the amdgpu sysfs files (`gpu_busy_percent`, `mem_info_vram_*` and on an APU `mem_info_gtt_*`, hwmon `temp1_input`,
+  `power1_input` (else `power1_average`), `freq1_input`; `gpu_metrics` header, libdrm's `amdgpu.ids`).
   Windows: per-processor times from `NtQuerySystemInformation`, memory and page-file counters, PDH counters for disk
   I/O and CPU speed, the default-route adapter's counters, NVML for NVIDIA cards, and AMD's driver library
   (`atiadlxx.dll`, the same source LibreHardwareMonitor and btop4win use) for AMD GPUs: load, clocks,
@@ -277,7 +288,7 @@ always knows what the agents cost.
 | Image | ≤ 25 MB | 22.2 MB on disk as `docker image ls` reports it (9.1 MB to pull), both agents included |
 | Hub (3 agents, 2 viewers) | ≤ 32 MB, ≤ 1% of a core | 14.8 MB RSS, 0.13% of a core over 60 s; about 20 MB with a full hour from four machines |
 | Agent, Linux, GPU rig | ≤ 30 MB, ≤ 1% of a core | 0.35% of a core; 22 MB as systemd accounts it (`systemctl status btop-agent`), 33.7 MB RSS: NVIDIA's NVML loads libcuda when it initialises and adds about 21 MB of shared and private pages by itself (the same agent without NVML uses 13.5 MB) |
-| Agent, Windows, Z13 | ≤ 30 MB, ≤ 1% of a core | 0.46% of a core, 5.6 MB working set (measured over a minute of streaming) |
+| Agent, Windows, Z13 (before 2026-11-13) | ≤ 30 MB, ≤ 1% of a core | 0.46% of a core, 5.6 MB working set (measured over a minute of streaming) |
 | Agent, Windows, gaming rig | ≤ 30 MB, ≤ 1% of a core | 0.20% of a core, 5.9 MB working set |
 | Page before history | ≤ 200 KB | 63 KB (41 KB sent compressed), fonts included; zero external requests. History: about 0.4 MB per machine-hour gzipped (1.3 MB for three full hours) |
 
@@ -294,13 +305,14 @@ network traffic between the machines over ssh. It runs at idle priority, stops b
 25 at most), installs nothing, and deletes what it copied and wrote.
 
 ```sh
-tools/lightshow.sh start --hosts tablet,gamingrig   # this machine and two Windows ssh hosts, 20 minutes
+tools/lightshow.sh start --hosts gamingrig      # this machine and a Windows ssh host, 20 minutes
 tools/lightshow.sh start --duration 5m --local-only --mem local=4G
 tools/lightshow.sh status
 tools/lightshow.sh stop                  # everything, everywhere, now
 ```
 
-Without `--hosts` it uses the example setup's ssh hosts, `tablet` and `gamingrig`, and the memory wave on this
+Without `--hosts` it uses the example setup's Windows ssh host, `gamingrig` (remote hosts must run Windows; the Z13
+left the default when it moved to Linux), and the memory wave on this
 machine peaks at 16 GiB unless you pass `--mem local=SIZE`, so lower it on a smaller machine. Options (hosts, memory
 and network peaks, leaving out the GPU, disk or network) and exactly what it does to each
 machine are in [`tools/lightshow/README.md`](tools/lightshow/README.md).

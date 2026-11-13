@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -65,6 +66,34 @@ type cpuTimes struct{ busy, total uint64 }
 type amdGPU struct {
 	dir  string // /sys/class/drm/cardN/device
 	info proto.GPUInfo
+	// gtt: integrated, so memory is VRAM (the firmware carve-out) plus GTT (system RAM the GPU maps).
+	gtt bool
+	// hwmon inputs, found once; "" when the driver does not offer one.
+	temp  string // temp1_input, millidegrees (edge)
+	power string // power1_input or power1_average, microwatts (PPT on an APU)
+	clock string // freq1_input, Hz (sclk)
+}
+
+// describe says which sysfs files feed this GPU, for --probe.
+func (a amdGPU) describe() string {
+	parts := []string{"amdgpu sysfs " + a.dir, "load gpu_busy_percent"}
+	if a.gtt {
+		parts = append(parts, "memory VRAM+GTT (integrated: mem_info_vram_* + mem_info_gtt_*)")
+	} else {
+		parts = append(parts, "memory mem_info_vram_used")
+	}
+	for _, f := range [][2]string{{"temp", a.temp}, {"power", a.power}, {"clock", a.clock}} {
+		if f[1] == "" {
+			parts = append(parts, f[0]+" none")
+			continue
+		}
+		s := f[0] + " " + filepath.Base(filepath.Dir(f[1])) + "/" + filepath.Base(f[1])
+		if f[0] == "power" && a.info.Integrated {
+			s += " (PPT: the whole package, CPU + GPU)"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // New returns the Linux collector.
@@ -197,16 +226,81 @@ func (c *linux) findGPUs() {
 	if len(amd) > 0 {
 		c.amd = amd
 		for i, a := range amd {
-			c.sources[fmt.Sprintf("gpu%d", i)] = "amdgpu sysfs " + a.dir
+			c.sources[fmt.Sprintf("gpu%d", i)] = a.describe()
 		}
 		return
 	}
 	c.sources["gpu0"] = "none: no NVIDIA (NVML) or amdgpu device"
 }
 
-func findAMD() []amdGPU {
+// Files the AMD discovery reads besides sysfs; variables so tests can point them at fixtures.
+var (
+	amdgpuIDsPath = "/usr/share/libdrm/amdgpu.ids" // libdrm's marketing names by PCI device and revision
+	cpuinfoPath   = "/proc/cpuinfo"
+)
+
+func findAMD() []amdGPU { return findAMDIn("/sys/class/drm") }
+
+// amdIsAPU reads the gpu_metrics table header: format_revision 1 is a discrete GPU's layout, 2 and
+// 3 an APU's (the Z13's Radeon 8060S reports 3). known is false when there is no readable header.
+func amdIsAPU(dev string) (apu, known bool) {
+	f, err := os.Open(filepath.Join(dev, "gpu_metrics"))
+	if err != nil {
+		return false, false
+	}
+	defer f.Close()
+	var h [4]byte // structure_size (2 bytes), format_revision, content_revision
+	if _, err := io.ReadFull(f, h[:]); err != nil {
+		return false, false
+	}
+	switch h[2] {
+	case 1:
+		return false, true
+	case 2, 3:
+		return true, true
+	}
+	return false, false
+}
+
+// amdName names an amdgpu device. product_name comes from a board FRU EEPROM, which APUs lack, so
+// fall back to libdrm's amdgpu.ids (device and revision), then to the "w/ Radeon ..." end of an
+// APU's CPU name, then to a generic name ("AMD GPU" would clean down to just "GPU").
+func amdName(dev string, apu bool) string {
+	if n := readTrim(filepath.Join(dev, "product_name")); n != "" {
+		return n
+	}
+	hex := func(file string) string {
+		return strings.ToUpper(strings.TrimPrefix(readTrim(filepath.Join(dev, file)), "0x"))
+	}
+	if id, rev := hex("device"), hex("revision"); id != "" {
+		if b, err := os.ReadFile(amdgpuIDsPath); err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				f := strings.Split(line, ",")
+				if len(f) >= 3 && strings.TrimSpace(f[0]) == id && strings.TrimSpace(f[1]) == rev {
+					return strings.TrimSpace(strings.Join(f[2:], ","))
+				}
+			}
+		}
+	}
+	if apu {
+		if b, err := os.ReadFile(cpuinfoPath); err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				if strings.HasPrefix(line, "model name") {
+					if i := strings.Index(line, " w/ "); i >= 0 {
+						return strings.TrimSpace(line[i+4:])
+					}
+					break
+				}
+			}
+		}
+	}
+	return "Radeon Graphics"
+}
+
+// findAMDIn scans drm (normally /sys/class/drm) for amdgpu devices.
+func findAMDIn(drm string) []amdGPU {
 	var out []amdGPU
-	cards, _ := filepath.Glob("/sys/class/drm/card[0-9]*")
+	cards, _ := filepath.Glob(filepath.Join(drm, "card[0-9]*"))
 	for _, card := range cards {
 		if strings.Contains(filepath.Base(card), "-") {
 			continue // connectors like card1-DP-1
@@ -216,18 +310,54 @@ func findAMD() []amdGPU {
 		if filepath.Base(drv) != "amdgpu" {
 			continue
 		}
-		total, _ := readUint(filepath.Join(dev, "mem_info_vram_total"))
-		name := readTrim(filepath.Join(dev, "product_name"))
-		if name == "" {
-			name = "AMD GPU"
+		vram, vramOK := readUint(filepath.Join(dev, "mem_info_vram_total"))
+		// An APU (integrated GPU) is told by its gpu_metrics layout; without one, by size: an APU's
+		// carve-out is small, a discrete card's VRAM is not. It is only shown when no NVIDIA GPU exists.
+		integrated, known := amdIsAPU(dev)
+		if !known {
+			integrated = vramOK && vram <= 4<<30
 		}
-		// An APU's carve-out is small and it sits on the CPU's own PCIe root; treat any amdgpu
-		// with <= 4 GiB of VRAM as integrated. It is only shown when no NVIDIA GPU exists.
-		out = append(out, amdGPU{dir: dev, info: proto.GPUInfo{
-			Name: CleanGPUName(name), Vendor: "amd", MemTotal: int64(total), Integrated: total <= 4<<30,
-		}})
+		g := amdGPU{dir: dev}
+		total := vram
+		if integrated && vramOK {
+			// The carve-out can be as small as 512 MiB (the Z13 at its BIOS minimum) while the GPU works
+			// out of system RAM mapped through GTT, which is also where ROCm allocates on an APU, so VRAM
+			// alone would read as a 512 MiB GPU. Count both, as Task Manager's "GPU memory" (dedicated +
+			// shared) does.
+			if gtt, ok := readUint(filepath.Join(dev, "mem_info_gtt_total")); ok {
+				total += gtt
+				g.gtt = true
+			}
+		}
+		name := amdName(dev, integrated)
+		if hw, _ := filepath.Glob(filepath.Join(dev, "hwmon", "hwmon*")); len(hw) > 0 {
+			h := hw[0]
+			if exists(filepath.Join(h, "temp1_input")) {
+				g.temp = filepath.Join(h, "temp1_input")
+			}
+			for _, p := range []string{"power1_input", "power1_average"} {
+				if exists(filepath.Join(h, p)) {
+					g.power = filepath.Join(h, p)
+					break
+				}
+			}
+			if exists(filepath.Join(h, "freq1_input")) {
+				g.clock = filepath.Join(h, "freq1_input")
+			}
+		}
+		g.info = proto.GPUInfo{Name: CleanGPUName(name), Vendor: "amd", MemTotal: int64(total), Integrated: integrated, Shared: g.gtt}
+		if !vramOK {
+			g.info.MemTotal = 0 // unknown, not zero
+		}
+		out = append(out, g)
 	}
-	sort.SliceStable(out, func(a, b int) bool { return out[a].info.MemTotal > out[b].info.MemTotal })
+	// Discrete first (VRAM+GTT can make an APU look bigger than a real card), then by memory.
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].info.Integrated != out[b].info.Integrated {
+			return !out[a].info.Integrated
+		}
+		return out[a].info.MemTotal > out[b].info.MemTotal
+	})
 	return out
 }
 
@@ -730,15 +860,30 @@ func (c *linux) collectGPU(s *proto.Sample) {
 	case len(c.amd) > 0:
 		s.GPU = make([]proto.GPUSample, len(c.amd))
 		for i, a := range c.amd {
+			g := &s.GPU[i]
 			if v, ok := readUint(a.dir + "/gpu_busy_percent"); ok {
-				s.GPU[i].Util = proto.U16(proto.PerMille(float64(v) / 100))
+				g.Util = proto.U16(proto.PerMille(float64(v) / 100))
 			}
 			if v, ok := readUint(a.dir + "/mem_info_vram_used"); ok {
-				s.GPU[i].MemUsed = proto.I64(int64(v))
+				if !a.gtt {
+					g.MemUsed = proto.I64(int64(v))
+				} else if gv, ok := readUint(a.dir + "/mem_info_gtt_used"); ok {
+					g.MemUsed = proto.I64(int64(v + gv)) // only both halves, never a misleading half
+				}
 			}
-			if ins, _ := filepath.Glob(a.dir + "/hwmon/hwmon*/temp1_input"); len(ins) > 0 {
-				if v, ok := readUint(ins[0]); ok {
-					s.GPU[i].Temp = proto.F64(float64(v) / 1000)
+			if a.temp != "" {
+				if v, ok := readUint(a.temp); ok {
+					g.Temp = proto.F64(float64(v) / 1000)
+				}
+			}
+			if a.power != "" {
+				if v, ok := readUint(a.power); ok {
+					g.Power = proto.F64(float64(v) / 1e6)
+				}
+			}
+			if a.clock != "" {
+				if v, ok := readUint(a.clock); ok {
+					g.Clock = proto.Int(int(v / 1_000_000))
 				}
 			}
 		}

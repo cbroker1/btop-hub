@@ -62,6 +62,9 @@ type GPUInfo struct {
 	Vendor     string `json:"vendor,omitempty"`   // "nvidia", "amd", "intel"
 	MemTotal   int64  `json:"memTotal,omitempty"` // bytes, 0 if unknown
 	Integrated bool   `json:"integrated,omitempty"`
+	// Shared: MemTotal and MemUsed include the system memory the GPU maps, not only VRAM
+	// (an AMD APU on Linux: the small VRAM carve-out plus GTT, which is where its work lives).
+	Shared bool `json:"shared,omitempty"`
 }
 
 // NetInfo describes the interface the network strip follows.

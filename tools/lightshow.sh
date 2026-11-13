@@ -235,7 +235,7 @@ cmd_build() {
 }
 
 cmd_start() {
-	_dur=20m _hosts="tablet gamingrig" _gpu= _disk=1 _net=1
+	_dur=20m _hosts="gamingrig" _gpu= _disk=1 _net=1
 	MEMS= NETS= ADDRS= DISKDIR=/var/tmp/btop-lightshow
 	while [ $# -gt 0 ]; do
 		case $1 in

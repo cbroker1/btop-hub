@@ -39,21 +39,25 @@ type Hello struct {
 
 // Info describes the machine. It changes rarely (network interface, disk size).
 type Info struct {
-	OS        string    `json:"os"`               // "linux" or "windows"
-	OSName    string    `json:"osName,omitempty"` // e.g. "Ubuntu 26.04.1 LTS"
-	Hostname  string    `json:"host,omitempty"`
-	CPUModel  string    `json:"cpu,omitempty"`     // cleaned, e.g. "Ryzen 9 7950X"
-	Cores     int       `json:"cores,omitempty"`   // physical cores, 0 if unknown
-	Threads   int       `json:"threads,omitempty"` // logical processors
-	MemTotal  int64     `json:"memTotal,omitempty"`
-	SwapLabel string    `json:"swapLabel,omitempty"` // "Swap" (Linux) or "page file" (Windows)
-	HasTemp   bool      `json:"hasTemp"`             // false: no CPU temperature source exists
-	Battery   bool      `json:"battery,omitempty"`   // machine has a battery
-	GPUs      []GPUInfo `json:"gpus,omitempty"`      // shown GPUs, primary first; same order as Sample.GPU
-	Net       NetInfo   `json:"net"`
-	Disk      DiskInfo  `json:"disk"`
-	BootTime  int64     `json:"boot,omitempty"` // agent wall clock unix ms
-	Sim       bool      `json:"sim,omitempty"`  // data is simulated (agent --simulate)
+	OS        string `json:"os"`               // "linux" or "windows"
+	OSName    string `json:"osName,omitempty"` // e.g. "Ubuntu 26.04.1 LTS"
+	Hostname  string `json:"host,omitempty"`
+	CPUModel  string `json:"cpu,omitempty"`     // cleaned, e.g. "Ryzen 9 7950X"
+	Cores     int    `json:"cores,omitempty"`   // physical cores, 0 if unknown
+	Threads   int    `json:"threads,omitempty"` // logical processors
+	MemTotal  int64  `json:"memTotal,omitempty"`
+	SwapLabel string `json:"swapLabel,omitempty"` // "Swap" (Linux) or "page file" (Windows)
+	HasTemp   bool   `json:"hasTemp"`             // false: no CPU temperature source exists
+	// CPUThrottle says how Sample.CPUHot is judged for this CPU; "" means it is not (unknown
+	// model, no sensor), and the page then never flags the CPU temperature.
+	CPUThrottle  string    `json:"cthr,omitempty"`
+	CPUTempLimit float64   `json:"ctlim,omitempty"`   // °C, the CPU's own limit (Tjmax), 0 if unknown
+	Battery      bool      `json:"battery,omitempty"` // machine has a battery
+	GPUs         []GPUInfo `json:"gpus,omitempty"`    // shown GPUs, primary first; same order as Sample.GPU
+	Net          NetInfo   `json:"net"`
+	Disk         DiskInfo  `json:"disk"`
+	BootTime     int64     `json:"boot,omitempty"` // agent wall clock unix ms
+	Sim          bool      `json:"sim,omitempty"`  // data is simulated (agent --simulate)
 }
 
 // GPUInfo describes one shown GPU.
@@ -65,6 +69,10 @@ type GPUInfo struct {
 	// Shared: MemTotal and MemUsed include the system memory the GPU maps, not only VRAM
 	// (an AMD APU on Linux: the small VRAM carve-out plus GTT, which is where its work lives).
 	Shared bool `json:"shared,omitempty"`
+	// Throttle says how GPUSample.Hot is judged for this GPU; "" means it is not, and the page
+	// falls back to a fixed temperature (agents older than this field never set it).
+	Throttle  string  `json:"thr,omitempty"`
+	TempLimit float64 `json:"tlim,omitempty"` // °C, the GPU's own limit (NVIDIA: slowdown temperature), 0 if unknown
 }
 
 // NetInfo describes the interface the network strip follows.
@@ -89,10 +97,11 @@ type Sample struct {
 	Seq uint64 `json:"q,omitempty"` // agent sequence number (stripped by the hub)
 	T   int64  `json:"t"`           // unix ms; agent clock from agents, hub receive time from the hub
 
-	CPU     []uint16  `json:"c,omitempty"`  // per logical processor busy time, per mille (0..1000)
-	CPUTemp *float64  `json:"ct,omitempty"` // °C
-	CPUFreq *float64  `json:"cf,omitempty"` // MHz
-	Load    []float64 `json:"la,omitempty"` // load average 1/5/15 min (Linux)
+	CPU     []uint16  `json:"c,omitempty"`    // per logical processor busy time, per mille (0..1000)
+	CPUTemp *float64  `json:"ct,omitempty"`   // °C
+	CPUHot  bool      `json:"chot,omitempty"` // heat is limiting the CPU's clocks now (see Info.CPUThrottle)
+	CPUFreq *float64  `json:"cf,omitempty"`   // MHz
+	Load    []float64 `json:"la,omitempty"`   // load average 1/5/15 min (Linux)
 
 	GPU []GPUSample `json:"g,omitempty"` // same order as Info.GPUs
 
@@ -132,17 +141,18 @@ const (
 
 // GPUSample is one GPU's measurement.
 type GPUSample struct {
-	Util     *uint16  `json:"u,omitempty"`  // per mille
-	MemUsed  *int64   `json:"m,omitempty"`  // bytes
-	Temp     *float64 `json:"t,omitempty"`  // °C
-	Power    *float64 `json:"p,omitempty"`  // W
-	PState   *int     `json:"ps,omitempty"` // 0..15
-	Fan      *int     `json:"f,omitempty"`  // percent
-	FanRPM   *int     `json:"fr,omitempty"` // rpm, where only a speed is known (the Z13's firmware gpu_fan)
-	Clock    *int     `json:"ck,omitempty"` // graphics clock MHz
-	MemClock *int     `json:"mk,omitempty"` // memory clock MHz
-	PcieTx   *int64   `json:"tx,omitempty"` // bytes/s
-	PcieRx   *int64   `json:"rx,omitempty"` // bytes/s
+	Util     *uint16  `json:"u,omitempty"`   // per mille
+	MemUsed  *int64   `json:"m,omitempty"`   // bytes
+	Temp     *float64 `json:"t,omitempty"`   // °C
+	Hot      bool     `json:"hot,omitempty"` // heat is limiting the GPU's clocks now (see GPUInfo.Throttle)
+	Power    *float64 `json:"p,omitempty"`   // W
+	PState   *int     `json:"ps,omitempty"`  // 0..15
+	Fan      *int     `json:"f,omitempty"`   // percent
+	FanRPM   *int     `json:"fr,omitempty"`  // rpm, where only a speed is known (the Z13's firmware gpu_fan)
+	Clock    *int     `json:"ck,omitempty"`  // graphics clock MHz
+	MemClock *int     `json:"mk,omitempty"`  // memory clock MHz
+	PcieTx   *int64   `json:"tx,omitempty"`  // bytes/s
+	PcieRx   *int64   `json:"rx,omitempty"`  // bytes/s
 }
 
 // Helpers for building optional fields.
@@ -193,13 +203,13 @@ func (i *Info) Validate() error {
 	if i.Threads < 0 || i.Threads > MaxThreads || len(i.GPUs) > MaxGPUs {
 		return errors.New("info out of range")
 	}
-	for _, s := range []string{i.OS, i.OSName, i.Hostname, i.CPUModel, i.SwapLabel, i.Net.Name, i.Net.Desc, i.Net.Addr, i.Net.Kind, i.Disk.Label, i.Disk.Model, i.Disk.Bus} {
+	for _, s := range []string{i.OS, i.OSName, i.Hostname, i.CPUModel, i.CPUThrottle, i.SwapLabel, i.Net.Name, i.Net.Desc, i.Net.Addr, i.Net.Kind, i.Disk.Label, i.Disk.Model, i.Disk.Bus} {
 		if len(s) > MaxStringLen {
 			return errors.New("info string too long")
 		}
 	}
 	for _, g := range i.GPUs {
-		if len(g.Name) > MaxStringLen || len(g.Vendor) > MaxStringLen {
+		if len(g.Name) > MaxStringLen || len(g.Vendor) > MaxStringLen || len(g.Throttle) > MaxStringLen {
 			return errors.New("gpu string too long")
 		}
 	}

@@ -28,6 +28,8 @@ var symbols = []string{
 	"nvmlDeviceGetMemoryInfo_v2", "nvmlDeviceGetTemperature", "nvmlDeviceGetPowerUsage",
 	"nvmlDeviceGetPerformanceState", "nvmlDeviceGetFanSpeed", "nvmlDeviceGetClockInfo",
 	"nvmlDeviceGetPcieThroughput", "nvmlSystemGetDriverVersion",
+	"nvmlDeviceGetCurrentClocksEventReasons", "nvmlDeviceGetCurrentClocksThrottleReasons",
+	"nvmlDeviceGetTemperatureThreshold",
 }
 
 // Open loads and initialises NVML.
@@ -191,6 +193,50 @@ func (l *Lib) getU32(name string, args ...uintptr) (uint32, error) {
 // Temperature returns the GPU core temperature in °C.
 func (l *Lib) Temperature(d Device) (uint32, error) {
 	return l.getU32("nvmlDeviceGetTemperature", uintptr(d), 0) // NVML_TEMPERATURE_GPU
+}
+
+// Temperature thresholds for TempThreshold (nvmlTemperatureThresholds_t).
+const (
+	TempThresholdShutdown = 0 // the GPU turns off
+	TempThresholdSlowdown = 1 // hardware starts cutting clocks
+)
+
+// TempThreshold returns one of the GPU's own temperature limits in °C, e.g. TempThresholdSlowdown
+// (95 °C on an RTX A6000; nvidia-smi -q -d TEMPERATURE shows them all).
+func (l *Lib) TempThreshold(d Device, typ int) (uint32, error) {
+	return l.getU32("nvmlDeviceGetTemperatureThreshold", uintptr(d), uintptr(typ))
+}
+
+// Clock event reasons (nvmlClocksEventReason*, formerly "throttle reasons"): why the clocks are
+// below their maximum. Several can be active at once.
+const (
+	ReasonGPUIdle      uint64 = 0x01
+	ReasonSWPowerCap   uint64 = 0x04 // the usual limit at full load: power, not heat
+	ReasonHWSlowdown   uint64 = 0x08 // hardware halved the clocks (heat or a power brake)
+	ReasonSWThermal    uint64 = 0x20 // the driver lowered clocks to hold the temperature target
+	ReasonHWThermal    uint64 = 0x40 // the hardware lowered clocks because the GPU is too hot
+	ReasonHWPowerBrake uint64 = 0x80 // an external power-brake signal (the PSU), not heat
+
+	ReasonsThermal = ReasonSWThermal | ReasonHWThermal
+)
+
+// ClockEventReasons returns the Reason* bits active right now. It uses the current function and
+// falls back to the name drivers before 535 export.
+func (l *Lib) ClockEventReasons(d Device) (uint64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, name := range []string{"nvmlDeviceGetCurrentClocksEventReasons", "nvmlDeviceGetCurrentClocksThrottleReasons"} {
+		l.clear()
+		err := l.check(name, uintptr(d), l.out()) // unsigned long long *
+		if err == errMissing {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		return *(*uint64)(unsafe.Pointer(&l.scratch[0])), nil
+	}
+	return 0, errMissing
 }
 
 // Power returns board power draw in milliwatts.

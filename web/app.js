@@ -7,8 +7,13 @@ const ALERT = {
   swapPct: 80,   // swap or page file in use, percent
   memPct: 90,    // memory in use, percent
   diskPct: 90,   // system volume full, percent
+  // CPU and GPU temperatures alert only while heat is limiting that chip's clocks, as its agent
+  // judges against the chip's own limits (internal/collect/thermal.go). This fixed temperature
+  // is only for GPUs whose agent predates that (no info.gpus[i].thr).
   gpuTempC: 85,  // GPU temperature, degrees C
 };
+// A GPU's temperature alert: its agent's throttle flag, or the fixed fallback.
+const gpuHot = (gin, gs) => gs.t != null && (gin.thr ? !!gs.hot : gs.t >= ALERT.gpuTempC);
 // Disk model aliases: reported model string -> display name, for drives that report a bare part number.
 const DISK_ALIAS = {
   'MTFDKBK1T0QGN-1BN1AABGA': 'Micron 2500', // the Z13's 1 TB M.2 2230
@@ -720,10 +725,12 @@ function drawCPU(m, info, s, L) {
   text(RX, r + 1, info.cpu || 'n/a', C.dim);
   textR(REND, r + 1, (info.cores ? info.cores + 'c / ' : '') + (T || '?') + 't', C.dim);
   text(RX, r + 2, 'clock ' + (s.cf != null ? freq(s.cf) : 'n/a'), C.dim);
-  let right;
-  if (!info.hasTemp) right = 'no temp sensor';
-  else right = (s.ct != null ? Math.round(s.ct) + '°C' : 'n/a') + (s.la && s.la.length ? ' · load ' + s.la[0].toFixed(1) : '');
-  textR(REND, r + 2, right, C.dim);
+  const la = s.la && s.la.length ? ' · load ' + s.la[0].toFixed(1) : '';
+  if (!info.hasTemp) textR(REND, r + 2, 'no temp sensor', C.dim);
+  else if (s.ct != null && info.cthr && s.chot) { // heat is limiting the CPU: badge the temperature
+    badgeR(REND - glyphs(la), r + 2, Math.round(s.ct) + '°C');
+    textR(REND, r + 2, la, C.dim);
+  } else textR(REND, r + 2, (s.ct != null ? Math.round(s.ct) + '°C' : 'n/a') + la, C.dim);
   text(RX, r + 3, 'busiest threads', C.dim);
   if (loads) {
     // Busiest first, as many as fit beside the heat strip (rows r+4 .. r+14), then the idle count
@@ -740,10 +747,10 @@ function drawCPU(m, info, s, L) {
   }
 }
 
-function gpuTemp(gs, end, r) {
+function gpuTemp(gin, gs, end, r) {
   if (gs.t == null) { textR(end, r, 'n/a', C.dim); return; }
   const t = Math.round(gs.t) + '°C';
-  if (gs.t >= ALERT.gpuTempC) badgeR(end, r, t); else textR(end, r, t, C.dim);
+  if (gpuHot(gin, gs)) badgeR(end, r, t); else textR(end, r, t, C.dim);
 }
 
 function drawGPU(m, info, s, G) {
@@ -756,13 +763,13 @@ function drawGPU(m, info, s, G) {
     const used = glyphs(gin.name || 'n/a') + 1 + glyphs(gs.t != null ? Math.round(gs.t) + '°C' : 'n/a');
     const pw = gs.p != null ? ' · ' + Math.round(gs.p) + ' W' : '', ck = gs.ck != null ? ' · ' + gs.ck + ' MHz' : '';
     let extra = fit(used, pw + ck, pw, ck);
-    if (gs.t != null && gs.t >= ALERT.gpuTempC) { badgeR(REND - glyphs(extra), r + 1, Math.round(gs.t) + '°C'); textR(REND, r + 1, extra, C.dim); }
+    if (gpuHot(gin, gs)) { badgeR(REND - glyphs(extra), r + 1, Math.round(gs.t) + '°C'); textR(REND, r + 1, extra, C.dim); }
     else textR(REND, r + 1, (gs.t != null ? Math.round(gs.t) + '°C' : 'n/a') + extra, C.dim);
     text(RX, r + 2, gin.shared ? 'gpu mem' : 'vram', C.dim);
     textR(REND, r + 2, pair(num(gs.m), gin.memTotal || NaN), C.dim);
     return;
   }
-  gpuTemp(gs, REND, r + 1);
+  gpuTemp(gin, gs, REND, r + 1);
   if (gs.p != null) {
     text(RX, r + 2, gin.shared ? 'package' : 'power', C.dim); // an APU's PPT covers CPU + GPU
     textR(REND, r + 2, Math.round(gs.p) + ' W' + (gs.ps != null ? ' · P' + gs.ps : '') + (gpuFan(gs) ? ' · fan ' + gpuFan(gs) : ''), C.dim);

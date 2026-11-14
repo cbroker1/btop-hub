@@ -31,6 +31,10 @@ type linux struct {
 	prevCPU []cpuTimes
 
 	tempPath, tempSrc string
+	tempCrit          string  // coretemp's tempN_crit beside tempPath (Intel's own Tjmax), or ""
+	cpuLimit          float64 // °C at which heat limits the CPU (its Tjmax), 0 if unknown
+	cpuThrottle       string  // Info.CPUThrottle
+	cpuFromAPU        bool    // CPUHot comes from the APU's firmware counters (collectGPU), not cpuLimit
 	freqPaths         []string
 
 	diskDevs    []string
@@ -80,6 +84,11 @@ type amdGPU struct {
 	// fan: fanN_input (rpm) of a firmware hwmon fan labelled gpu_fan, for an integrated GPU, whose
 	// own hwmon has no fan (the Z13's ASUS firmware, hwmon "asus", reports cpu_fan and gpu_fan).
 	fan string
+	// thm: the gpu_metrics table keeps thermal throttle counters (amdV3Thm), so Hot, and on an APU
+	// the CPU's flag, come from them growing since the previous sample (prevThm, once haveThm).
+	thm     bool
+	prevThm amdThm
+	haveThm bool
 }
 
 // describe says which sysfs files feed this GPU, for --probe.
@@ -125,9 +134,11 @@ func New() (Collector, error) {
 	c.sources["uptime"] = "/proc/uptime"
 	c.sources["commit"] = "none: Linux overcommits; not shown"
 	c.findTemp()
+	c.findCPULimit()
 	c.findFreq()
 	c.findBattery()
 	c.findGPUs()
+	c.findAPULimits()
 	c.refreshDisks(time.Now())
 	c.refreshNet(time.Now())
 	c.refreshInfo(time.Now())
@@ -195,6 +206,9 @@ func (c *linux) findTemp() {
 					c.tempPath = in
 					c.tempSrc = fmt.Sprintf("%s %s (%s)", name, lbl, in)
 					c.sources["cpu_temp"] = c.tempSrc
+					if crit := strings.TrimSuffix(in, "_input") + "_crit"; name == "coretemp" && exists(crit) {
+						c.tempCrit = crit
+					}
 					return
 				}
 			}
@@ -202,6 +216,93 @@ func (c *linux) findTemp() {
 	}
 	c.sources["cpu_temp"] = "none: no k10temp/zenpower/coretemp sensor in /sys/class/hwmon"
 }
+
+// findCPULimit finds the temperature at which heat limits the CPU: Intel's own Tjmax from
+// coretemp, or an AMD model's published Tjmax (cpuTjMax). See thermal.go.
+func (c *linux) findCPULimit() {
+	if c.tempPath == "" {
+		c.sources["cpu_throttle"] = "none: no CPU temperature"
+		return
+	}
+	if c.tempCrit != "" {
+		if v, ok := readUint(c.tempCrit); ok && v >= 50_000 && v <= 130_000 {
+			c.cpuLimit = float64(v) / 1000
+			c.cpuThrottle = cpuThrottleDesc(c.cpuLimit, "coretemp "+filepath.Base(c.tempCrit))
+		}
+	}
+	if c.cpuLimit == 0 {
+		model, _ := cpuModel()
+		limit, from, ok := cpuTjMax(model)
+		if !ok {
+			c.sources["cpu_throttle"] = fmt.Sprintf("none: no Tjmax known for %q, so the CPU is never flagged", model)
+			return
+		}
+		c.cpuLimit, c.cpuThrottle = limit, cpuThrottleDesc(limit, from)
+	}
+	c.sources["cpu_throttle"] = c.cpuThrottle
+}
+
+// findAPULimits sets how an integrated AMD GPU, and the CPU on the same die, are judged. Where the
+// firmware keeps thermal throttle counters (gpu_metrics v3.0: Strix Halo, the Z13) they say so
+// directly; otherwise both are judged against the CPU's Tjmax, which covers the one die.
+func (c *linux) findAPULimits() {
+	for i := range c.amd {
+		a := &c.amd[i]
+		if !a.info.Integrated {
+			continue
+		}
+		if b, err := os.ReadFile(filepath.Join(a.dir, "gpu_metrics")); err == nil {
+			if _, ok := amdV3Thm(b); ok {
+				a.thm = true
+				a.info.TempLimit = c.cpuLimit
+				a.info.Throttle = amdThmGPUDesc
+				c.sources[fmt.Sprintf("gpu%d_throttle", i)] = a.info.Throttle
+				if c.tempPath != "" && !c.cpuFromAPU {
+					c.cpuFromAPU = true
+					c.cpuThrottle = amdThmCPUDesc
+					c.sources["cpu_throttle"] = c.cpuThrottle
+				}
+				continue
+			}
+		}
+		if c.cpuLimit > 0 && a.temp != "" {
+			a.info.TempLimit = c.cpuLimit
+			a.info.Throttle = cpuThrottleDesc(c.cpuLimit, "shared with the CPU on one die")
+			c.sources[fmt.Sprintf("gpu%d_throttle", i)] = a.info.Throttle
+		}
+	}
+}
+
+// gpu_metrics v3.0 (struct gpu_metrics_v3_0) ends with the firmware's throttle residency
+// counters, uint32 each from this offset: PROCHOT, SPL, FPPT, SPPT (power limits), then THM_CORE,
+// THM_GFX and THM_SOC, the time the CPU cores, the GPU and the SoC have spent held back by heat.
+// They only ever grow. Checked on the Z13 on 2026-11-14: a 264-byte table whose
+// current_core_maxfreq and current_gfx_maxfreq just before (5150 and 2900 MHz) are the chip's
+// boost limits, and counters in the millions (SPPT) and thousands (THM_CORE) that hold still at idle.
+const amdV3ThmOff = 228
+
+const (
+	amdThmGPUDesc = "firmware thermal throttle counters THM_GFX and THM_SOC growing (gpu_metrics v3.0)"
+	amdThmCPUDesc = "firmware thermal throttle counter THM_CORE growing (gpu_metrics v3.0)"
+)
+
+// amdThm is one reading of the thermal throttle counters. PROCHOT is left out: laptops also
+// assert it for power (on battery, a weak adapter), which is not the chip's heat.
+type amdThm struct{ core, gfx, soc uint32 }
+
+// amdV3Thm reads the thermal throttle counters from a gpu_metrics v3.0 table.
+func amdV3Thm(b []byte) (amdThm, bool) {
+	if len(b) < amdV3ThmOff+28 || b[2] != 3 || b[3] != 0 {
+		return amdThm{}, false
+	}
+	u32 := func(off int) uint32 {
+		return uint32(b[off]) | uint32(b[off+1])<<8 | uint32(b[off+2])<<16 | uint32(b[off+3])<<24
+	}
+	return amdThm{core: u32(amdV3ThmOff + 16), gfx: u32(amdV3ThmOff + 20), soc: u32(amdV3ThmOff + 24)}, true
+}
+
+// grew reports a counter that went up; a reset or wrap (it went down) is not throttling.
+func grew(prev, cur uint32) bool { return cur > prev }
 
 func (c *linux) findFreq() {
 	paths, _ := filepath.Glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")
@@ -571,6 +672,7 @@ func (c *linux) refreshInfo(now time.Time) {
 		info.Threads = runtime.NumCPU()
 	}
 	info.HasTemp = c.tempPath != ""
+	info.CPUThrottle, info.CPUTempLimit = c.cpuThrottle, c.cpuLimit
 	info.Battery = c.batDir != ""
 	if b := c.read("/proc/meminfo"); b != nil {
 		m := parseMeminfo(b)
@@ -782,6 +884,9 @@ func (c *linux) collectTempFreq(s *proto.Sample) {
 	if c.tempPath != "" {
 		if v, ok := readUint(c.tempPath); ok {
 			s.CPUTemp = proto.F64(float64(v) / 1000)
+			if !c.cpuFromAPU {
+				s.CPUHot = atLimit(*s.CPUTemp, c.cpuLimit)
+			}
 		}
 	}
 	if len(c.freqPaths) > 0 {
@@ -930,8 +1035,21 @@ func (c *linux) collectGPU(s *proto.Sample) {
 		s.GPU = c.nv.Sample()
 	case len(c.amd) > 0:
 		s.GPU = make([]proto.GPUSample, len(c.amd))
-		for i, a := range c.amd {
-			g := &s.GPU[i]
+		for i := range c.amd {
+			a, g := &c.amd[i], &s.GPU[i]
+			if a.thm {
+				if b, err := os.ReadFile(filepath.Join(a.dir, "gpu_metrics")); err == nil {
+					if t, ok := amdV3Thm(b); ok {
+						if a.haveThm {
+							g.Hot = grew(a.prevThm.gfx, t.gfx) || grew(a.prevThm.soc, t.soc)
+							if a.info.Integrated && c.cpuFromAPU {
+								s.CPUHot = grew(a.prevThm.core, t.core)
+							}
+						}
+						a.prevThm, a.haveThm = t, true
+					}
+				}
+			}
 			if v, ok := readUint(a.dir + "/gpu_busy_percent"); ok {
 				g.Util = proto.U16(proto.PerMille(float64(v) / 100))
 			}
@@ -945,6 +1063,9 @@ func (c *linux) collectGPU(s *proto.Sample) {
 			if a.temp != "" {
 				if v, ok := readUint(a.temp); ok {
 					g.Temp = proto.F64(float64(v) / 1000)
+					if !a.thm {
+						g.Hot = atLimit(*g.Temp, a.info.TempLimit)
+					}
 				}
 			}
 			if a.power != "" {

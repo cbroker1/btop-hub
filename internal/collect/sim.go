@@ -80,6 +80,16 @@ func NewSim(profile string, opts SimOptions, now time.Time) (*Sim, error) {
 	default:
 		return nil, fmt.Errorf("unknown simulated machine %q (have %v)", profile, SimProfiles)
 	}
+	// Thermal limits as the real agents report them (thermal.go). The simulated temperatures stay
+	// under them, so a simulated pane never shows a throttling alert.
+	if lim, from, ok := cpuTjMax(s.info.CPUModel); ok && s.info.HasTemp {
+		s.info.CPUTempLimit, s.info.CPUThrottle = lim, cpuThrottleDesc(lim, from)
+	}
+	for i := range s.info.GPUs {
+		if g := &s.info.GPUs[i]; g.Vendor == "nvidia" {
+			g.Throttle = nvThrottleDesc
+		}
+	}
 	s.info.Sim = true
 	s.boot = now.Add(-opts.Uptime)
 	s.info.BootTime = s.boot.UnixMilli()
@@ -197,6 +207,7 @@ func (s *Sim) Collect(now time.Time) proto.Sample {
 	avg /= float64(n)
 	if s.info.HasTemp {
 		smp.CPUTemp = proto.F64(math.Round((42+40*avg+3*noise(ts, 17))*10) / 10)
+		smp.CPUHot = atLimit(*smp.CPUTemp, s.info.CPUTempLimit)
 	}
 	smp.CPUFreq = proto.F64(float64(int(3000 + 2500*math.Min(1, avg*3) + 200*noise(ts, 19))))
 	if s.info.OS == "linux" {

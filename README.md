@@ -185,9 +185,21 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
 - **No data** (before boot, asleep, agent stopped) is left blank in the page colour with a thin rule at its edge;
   it is never drawn as zero. A real zero (a mean under one eighth of a row) is a thin grey line at the baseline. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
   readouts.
-- **Alerts** use the orange-red badge only past a threshold: swap or page file at 80%, memory at 90%, disk at 90%,
-  GPU at 85 °C. The thresholds are in one block at the top of `web/app.js`, next to `DISK_ALIAS`, which gives drives
+- **Alerts** use the orange-red badge only past a threshold: swap or page file at 80%, memory at 90%, disk at 90%.
+  The thresholds are in one block at the top of `web/app.js`, next to `DISK_ALIAS`, which gives drives
   that report a bare part number a product name (the Z13's MTFDKBK1T0QGN-1BN1AABGA shows as "Micron 2500").
+- **Temperature alerts** badge a CPU or GPU temperature only while heat is limiting that chip's clocks, judged against
+  its own limits rather than one figure for all (`internal/collect/thermal.go`). An NVIDIA GPU is flagged when its
+  driver reports a thermal slowdown (what `nvidia-smi` shows as SW/HW Thermal Slowdown); its power cap, the usual
+  limit at full load, is not heat and is not flagged, so an RTX A6000 at 85 °C under load stays plain. On an APU
+  whose firmware keeps thermal throttle counters (gpu_metrics v3.0, Strix Halo: the Z13), the CPU is flagged in a
+  second its THM_CORE counter grew and the GPU when THM_GFX or THM_SOC grew; the power-limit counters (SPL, FPPT,
+  SPPT) and PROCHOT, which laptops also raise for power, are not flagged. Any other CPU, and an integrated GPU on the
+  same die, is flagged at the chip's Tjmax less 1 °C: 95 °C for the Ryzen 9 7950X and 9950X3D, from AMD's
+  specifications (Intel's comes from coretemp). Ryzen boosts until it reaches Tjmax and then holds there by lowering
+  clocks, so an all-core load can keep a 7950X at 95 °C, flagged, by design. A CPU model not in the table is never
+  flagged. An agent older than this keeps the old fixed 85 °C rule for its GPUs. `--probe` shows how each machine is
+  judged (`cpu_throttle`, and `thr`/`tlim` per GPU).
 - **Fitting the screen.** The page picks the arrangement with the biggest characters: all panes side by side, or
   stacked (two on top, one below) when that is bigger, as on a tablet in portrait. All machines are shown together
   while a character is at least 5 device pixels and 3 CSS pixels wide (`MIN_CELL` at the top of `web/app.js`):

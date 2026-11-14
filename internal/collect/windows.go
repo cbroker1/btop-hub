@@ -117,6 +117,7 @@ type winCollector struct {
 	cpuIdent  string // registry Identifier
 	atk       *winATK
 	pio       *winPawnIO
+	cpuLimit  float64 // °C at which heat limits the CPU (its Tjmax, thermal.go), 0 if unknown
 
 	// ACPI thermal zones: a separate query, collected only for Report
 	therm    *winPdhQuery
@@ -229,6 +230,7 @@ func New() (Collector, error) {
 			c.setSource("cpu_temp", why)
 		}
 	}, c.initCPUTemp)
+	c.initCPULimit() // after initCPUTemp: HasTemp is final
 	if c.haveTick {
 		c.setSource("uptime", winSrcUptime)
 	} else {
@@ -337,6 +339,9 @@ func (c *winCollector) collect(s *proto.Sample, now time.Time) {
 	}
 	if c.atk != nil || c.pio != nil {
 		c.timer.Measure("cpu_temp", func() { c.sampleCPUTemp(s) })
+	}
+	if s.CPUTemp != nil {
+		s.CPUHot = atLimit(*s.CPUTemp, c.cpuLimit)
 	}
 }
 
@@ -601,6 +606,23 @@ func winCoreCount() (int, error) {
 		return 0, fmt.Errorf("returned %d bytes into %d", n, len(buf))
 	}
 	return winCountCores(buf[:n])
+}
+
+// initCPULimit finds the CPU's Tjmax, against which Sample.CPUHot is judged (thermal.go). On
+// Windows it comes from the model's published figure: there is no coretemp to ask.
+func (c *winCollector) initCPULimit() {
+	if !c.info.HasTemp {
+		c.setSource("cpu_throttle", "none: no CPU temperature")
+		return
+	}
+	limit, from, ok := cpuTjMax(c.info.CPUModel)
+	if !ok {
+		c.setSource("cpu_throttle", fmt.Sprintf("none: no Tjmax known for %q, so the CPU is never flagged", c.info.CPUModel))
+		return
+	}
+	c.cpuLimit = limit
+	c.info.CPUTempLimit, c.info.CPUThrottle = limit, cpuThrottleDesc(limit, from)
+	c.setSource("cpu_throttle", c.info.CPUThrottle)
 }
 
 // initCPUTemp finds the CPU temperature when AMD's driver library has not (it reports one only

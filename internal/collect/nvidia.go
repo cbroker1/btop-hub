@@ -24,6 +24,9 @@ type Nvidia struct {
 type nvDev struct {
 	d    nvml.Device
 	info proto.GPUInfo
+	// reasons: the driver reports clock event reasons, so Hot comes from its thermal-slowdown
+	// flags; otherwise from the temperature reaching the GPU's own slowdown threshold, if known.
+	reasons bool
 }
 
 // OpenNvidia loads NVML and enumerates GPUs. It returns (nil, reason) when there is no
@@ -49,9 +52,19 @@ func OpenNvidia() (*Nvidia, string) {
 		}
 		name, _ := lib.Name(d)
 		total, _, _ := lib.Memory(d)
-		g.devs = append(g.devs, nvDev{d: d, info: proto.GPUInfo{
+		dev := nvDev{d: d, info: proto.GPUInfo{
 			Name: CleanGPUName(name), Vendor: "nvidia", MemTotal: int64(total),
-		}})
+		}}
+		if t, err := lib.TempThreshold(d, nvml.TempThresholdSlowdown); err == nil && t > 0 && t < 150 {
+			dev.info.TempLimit = float64(t)
+		}
+		if _, err := lib.ClockEventReasons(d); err == nil {
+			dev.reasons = true
+			dev.info.Throttle = nvThrottleDesc
+		} else if dev.info.TempLimit > 0 {
+			dev.info.Throttle = fmt.Sprintf("temperature at its %g °C slowdown threshold", dev.info.TempLimit)
+		}
+		g.devs = append(g.devs, dev)
 	}
 	if len(g.devs) == 0 {
 		lib.Close()
@@ -88,6 +101,13 @@ func (g *Nvidia) Sample() []proto.GPUSample {
 		}
 		if t, err := g.lib.Temperature(d); err == nil {
 			s.Temp = proto.F64(float64(t))
+		}
+		if dev.reasons {
+			if r, err := g.lib.ClockEventReasons(d); err == nil {
+				s.Hot = r&nvml.ReasonsThermal != 0
+			}
+		} else if s.Temp != nil && dev.info.TempLimit > 0 {
+			s.Hot = *s.Temp >= dev.info.TempLimit
 		}
 		if p, err := g.lib.Power(d); err == nil {
 			s.Power = proto.F64(float64(p) / 1000)

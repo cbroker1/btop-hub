@@ -33,7 +33,7 @@ const C = {
   page: '#181a1a', strip: '#1d1f1f', text: '#d4d5ca', dim: '#8a91a8', rule: '#414858', tick: '#6b7388',
   track: '#2e3239', fill: '#a9b4c9', cached: '#5d6780', other: '#3d4453',
   hist: '#6f7b93', histCached: '#3f4759', alert: '#ff6a4d', alertText: '#000000',
-  down: '#5fd0d0', up: '#97a6ee', guide: 'rgba(255,255,255,0.10)', wash: 'rgba(255,255,255,0.035)',
+  down: '#5fd0d0', up: '#97a6ee', disk: '#89d275', // disk: the green ramp's stop that matches down and up guide: 'rgba(255,255,255,0.10)', wash: 'rgba(255,255,255,0.035)',
 };
 const STOPS = {
   load: ['#2b2a2e', '#4a2634', '#7d2836', '#b63a2e', '#de6a2b', '#f4a23c', '#ffd166', '#fff0b8'],
@@ -833,8 +833,8 @@ function drawDisk(info, s, a, r) {
   bar(RX, REND, r + 1, isFinite(f) ? [[f, alert ? C.alert : C.fill]] : []);
   const model = [DISK_ALIAS[d.model] || shortModel(d.model), d.bus].filter(Boolean).join(' · ');
   text(RX, r + 2, model, C.dim);
-  text(RX, r + 3, '▼', C.down); text(RX + 2, r + 3, 'read', C.text); textR(REND, r + 3, rate(num(s.dr)), C.text, true);
-  text(RX, r + 4, '▲', C.up); text(RX + 2, r + 4, 'write', C.text); textR(REND, r + 4, rate(num(s.dw)), C.text, true);
+  text(RX, r + 3, '▼', C.disk); text(RX + 2, r + 3, 'read', C.text); textR(REND, r + 3, rate(num(s.dr)), C.text, true);
+  text(RX, r + 4, '▲', C.disk); text(RX + 2, r + 4, 'write', C.text); textR(REND, r + 4, rate(num(s.dw)), C.text, true);
   text(RX, r + 5, 'peak', C.dim);
   textR(REND, r + 5, fit(4, `▼ ${rate(a.peakDr)} · ▲ ${rate(a.peakDw)}`, `▼ ${rate(a.peakDr)} ▲ ${rate(a.peakDw)}`), C.dim);
   text(RX, r + 6, 'scale', C.dim);
@@ -1139,8 +1139,8 @@ const DETAIL = {
       ['written in the last ' + spanText(), dw.n ? size(dw.sum) : 'n/a', '', ''],
     ];
     const strips = [
-      { label: 'read', scale: 'log', ramp: 'down', get: i => m.dr[i], fmt: rate },
-      { label: 'write', scale: 'log', ramp: 'up', get: i => m.dw[i], fmt: rate },
+      { label: 'read', scale: 'log', ramp: 'disk', get: i => m.dr[i], fmt: rate },
+      { label: 'write', scale: 'log', ramp: 'disk', get: i => m.dw[i], fmt: rate },
     ];
     const sub = [DISK_ALIAS[d.model] || d.model, d.bus, 'space is the system volume, rates all physical disks'].filter(Boolean).join(' · ');
     return { title: 'Disk ' + (d.label || ''), sub, rows, strips };

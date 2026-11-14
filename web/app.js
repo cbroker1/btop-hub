@@ -723,7 +723,7 @@ function drawCPU(m, info, s, L) {
     // on the strip's last row.
     const top = loads.map((v, i) => [v, i]).sort((p, q) => q[0] - p[0] || p[1] - q[1]).slice(0, CPU_LIST);
     top.forEach(([v, i], k) => {
-      text(RX, r + 4 + k, 'C' + i, C.text);
+      text(RX, r + 4 + k, 'T' + i, C.text); // T: logical thread (heat-strip row), not core
       bar(RX + 5, RX + 25, r + 4 + k, [[v, RAMP.load[level(v)]]]);
       textR(REND, r + 4 + k, pct(v), C.text);
     });

@@ -35,6 +35,7 @@ const STOPS = {
   load: ['#2b2a2e', '#4a2634', '#7d2836', '#b63a2e', '#de6a2b', '#f4a23c', '#ffd166', '#fff0b8'],
   down: ['#22303a', '#1f4a5c', '#1f7387', '#2aa3b0', '#5fd0d0', '#a8ecea', '#e6fbfa'],
   up: ['#2a2b40', '#3a3e75', '#4f58a8', '#6f7dd6', '#97a6ee', '#c5cdfa', '#edf0ff'],
+  disk: ['#203329', '#274e35', '#3e7748', '#5aa657', '#89d275', '#c0edae', '#eefbe8'], // storage, apart from the network's teal
 };
 // 16 levels; level k sits k/15 of the way along the stops, linear RGB between them.
 function makeRamp(stops) {
@@ -614,13 +615,14 @@ function drawPane(m, now) {
   ylabel('100', L.mem, L.mem, L.mem + 5);
   ylabel('0', L.mem + 5, L.mem, L.mem + 5);
 
-  // Disk I/O, as the network: reads up from the centre line, writes down, on the fixed log scale.
+  // Disk I/O, as the network: reads up from the centre line, writes down, on the fixed log scale,
+  // both on the green disk ramp.
   const DH = 3.5, dmid = L.disk + DH;
   const hasDisk = c => a.dr.cnt[c] > 0 || a.dw.cnt[c] > 0;
   stripBg(L.disk, L.disk + 7, hasDisk);
   for (let c = 0; c < GW; c++) {
-    if (a.dr.cnt[c]) areaCol(c, dmid, -1, DH, logFrac(mean(a.dr, c)), logFrac(a.dr.max[c]), 'down');
-    if (a.dw.cnt[c]) areaCol(c, dmid, 1, DH, logFrac(mean(a.dw, c)), logFrac(a.dw.max[c]), 'up');
+    if (a.dr.cnt[c]) areaCol(c, dmid, -1, DH, logFrac(mean(a.dr, c)), logFrac(a.dr.max[c]), 'disk');
+    if (a.dw.cnt[c]) areaCol(c, dmid, 1, DH, logFrac(mean(a.dw, c)), logFrac(a.dw.max[c]), 'disk');
   }
   edgeRules(L.disk, L.disk + 7, hasDisk);
   ylabel('1G', L.disk, L.disk, L.disk + 7);

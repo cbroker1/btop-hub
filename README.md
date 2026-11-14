@@ -179,8 +179,9 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
   yellow (busy). Beside it, the busiest threads in descending order (as many as fit beside the strip, 11) and how
   many threads are under 5%.
 - **GPU, memory.** GPU busy on top, GPU memory history under it (VRAM, or VRAM + GTT on a Linux APU, labelled "mem"); memory in use, with the OS file cache stacked above.
-- **Disk, network.** Bytes per second on a fixed log scale (1 KiB/s at the baseline, 1 GiB/s at full height);
-  download grows up from the centre line, upload down.
+- **Disk, network.** Bytes per second on a fixed log scale (1 KiB/s at the centre line, 1 GiB/s at full height):
+  disk reads grow up from the centre line and writes down, in green; network download grows up in teal and upload
+  down in periwinkle.
 - **No data** (before boot, asleep, agent stopped) is left blank in the page colour with a thin rule at its edge;
   it is never drawn as zero. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
   readouts.

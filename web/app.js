@@ -513,6 +513,9 @@ function edgeRules(r0, r1, has) {
 // Edges go through Y(), so they land on the same pixels as the strip's cell boundaries.
 function areaCol(c, base, dir, rows, mean, peak, key) {
   const e8 = rows * 8;
+  // A mean that rounds to zero eighths still gets the minimum one-eighth sliver, but in the rule
+  // colour: in the ramp's darkest red it read as an error underline under an idle GPU.
+  const zero = !(Math.round(mean * e8) >= 1);
   let me = Math.max(1, Math.round(mean * e8)), pe = Math.max(me, Math.round(peak * e8));
   me = Math.min(me, e8); pe = Math.min(pe, e8);
   const x0 = X(GX + c), x1 = X(GX + c + 1);
@@ -523,7 +526,7 @@ function areaCol(c, base, dir, rows, mean, peak, key) {
   const lvl = r => Math.max(2, level((r + 0.5) / rows));
   for (let r = 0; r * 8 < pe; r++) {
     const lo = r * 8, hi = lo + 8, L = lvl(r);
-    if (Math.min(me, hi) > lo) band(lo, Math.min(me, hi), RAMP[key][L]);
+    if (Math.min(me, hi) > lo) band(lo, Math.min(me, hi), zero ? C.rule : RAMP[key][L]);
     const v0 = Math.max(me, lo), v1 = Math.min(pe, hi);
     if (v1 > v0) band(v0, v1, VEIL[key][L]);
   }

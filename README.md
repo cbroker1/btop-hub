@@ -183,7 +183,7 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
   disk reads grow up from the centre line and writes down, in green; network download grows up in teal and upload
   down in periwinkle.
 - **No data** (before boot, asleep, agent stopped) is left blank in the page colour with a thin rule at its edge;
-  it is never drawn as zero. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
+  it is never drawn as zero. A real zero (a mean under one eighth of a row) is a thin grey line at the baseline. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
   readouts.
 - **Alerts** use the orange-red badge only past a threshold: swap or page file at 80%, memory at 90%, disk at 90%,
   GPU at 85 °C. The thresholds are in one block at the top of `web/app.js`.

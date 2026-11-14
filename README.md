@@ -186,7 +186,8 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
   it is never drawn as zero. A real zero (a mean under one eighth of a row) is a thin grey line at the baseline. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
   readouts.
 - **Alerts** use the orange-red badge only past a threshold: swap or page file at 80%, memory at 90%, disk at 90%,
-  GPU at 85 °C. The thresholds are in one block at the top of `web/app.js`.
+  GPU at 85 °C. The thresholds are in one block at the top of `web/app.js`, next to `DISK_ALIAS`, which gives drives
+  that report a bare part number a product name (the Z13's MTFDKBK1T0QGN-1BN1AABGA shows as "Micron 2500").
 - **Fitting the screen.** The page picks the arrangement with the biggest characters: all panes side by side, or
   stacked (two on top, one below) when that is bigger, as on a tablet in portrait. All machines are shown together
   while a character is at least 5 device pixels and 3 CSS pixels wide (`MIN_CELL` at the top of `web/app.js`):

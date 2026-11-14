@@ -9,6 +9,10 @@ const ALERT = {
   diskPct: 90,   // system volume full, percent
   gpuTempC: 85,  // GPU temperature, degrees C
 };
+// Disk model aliases: reported model string -> display name, for drives that report a bare part number.
+const DISK_ALIAS = {
+  'MTFDKBK1T0QGN-1BN1AABGA': 'Micron 2500', // the Z13's 1 TB M.2 2230
+};
 const OFFLINE_MS = 5000; // a pane is offline after this long without a sample
 
 // ---- Text size: this much larger than the design's 8 x 20 px cell -----------------------
@@ -827,7 +831,7 @@ function drawDisk(info, s, a, r) {
   if (alert) badge(RX + glyphs(label) + 1, r, pct(f));
   textR(REND, r, isFinite(f) ? `${pct(f)} of ${size(tot)}` : 'n/a', C.text);
   bar(RX, REND, r + 1, isFinite(f) ? [[f, alert ? C.alert : C.fill]] : []);
-  const model = [shortModel(d.model), d.bus].filter(Boolean).join(' · ');
+  const model = [DISK_ALIAS[d.model] || shortModel(d.model), d.bus].filter(Boolean).join(' · ');
   text(RX, r + 2, model, C.dim);
   text(RX, r + 3, '▼', C.down); text(RX + 2, r + 3, 'read', C.text); textR(REND, r + 3, rate(num(s.dr)), C.text, true);
   text(RX, r + 4, '▲', C.up); text(RX + 2, r + 4, 'write', C.text); textR(REND, r + 4, rate(num(s.dw)), C.text, true);
@@ -1138,7 +1142,7 @@ const DETAIL = {
       { label: 'read', scale: 'log', ramp: 'down', get: i => m.dr[i], fmt: rate },
       { label: 'write', scale: 'log', ramp: 'up', get: i => m.dw[i], fmt: rate },
     ];
-    const sub = [d.model, d.bus, 'space is the system volume, rates all physical disks'].filter(Boolean).join(' · ');
+    const sub = [DISK_ALIAS[d.model] || d.model, d.bus, 'space is the system volume, rates all physical disks'].filter(Boolean).join(' · ');
     return { title: 'Disk ' + (d.label || ''), sub, rows, strips };
   },
   net(m, info, s, i0) {

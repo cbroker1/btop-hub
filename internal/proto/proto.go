@@ -138,6 +138,7 @@ type GPUSample struct {
 	Power    *float64 `json:"p,omitempty"`  // W
 	PState   *int     `json:"ps,omitempty"` // 0..15
 	Fan      *int     `json:"f,omitempty"`  // percent
+	FanRPM   *int     `json:"fr,omitempty"` // rpm, where only a speed is known (the Z13's firmware gpu_fan)
 	Clock    *int     `json:"ck,omitempty"` // graphics clock MHz
 	MemClock *int     `json:"mk,omitempty"` // memory clock MHz
 	PcieTx   *int64   `json:"tx,omitempty"` // bytes/s

@@ -11,8 +11,8 @@ once a second and pushes to a hub that runs in Docker on your LAN, and every pan
 ## What you get
 
 - **Every machine side by side**, each with an hour of history on a non-linear time axis (1h, 30m, 15m, 8m, 4m, 2m,
-  1m, now): a per-thread CPU heat map, GPU busy and VRAM, memory and file cache, and disk I/O and network on log
-  scales.
+  1m, now): a per-thread CPU heat map, GPU busy and VRAM, memory and file cache, and disk reads and writes and
+  network download and upload on log scales, each with its rate now and its peak in the hour.
 - **Tap for details.** Tap or click any part of a pane for an overlay with averages, peaks and one-second charts.
   Pinch to zoom; the panes fill any screen, and there is a full-screen mode.
 - **Small agents for Linux and Windows.** They sample once a second, keep their own last hour and push to the hub
@@ -138,7 +138,9 @@ curl -fsSL http://192.168.1.74:28677/install.sh | sudo sh -s -- --token TOKEN --
 curl -fsSL http://192.168.1.74:28677/uninstall.sh | sudo sh      # to remove it
 ```
 
-AMD GPUs on Linux are read from the amdgpu driver's sysfs files: load, temperature, power (PPT) and core clock. An
+AMD GPUs on Linux are read from the amdgpu driver's sysfs files: load, temperature, power (PPT), core clock and
+memory clock (hwmon `mclk` on a discrete card; on an APU, the UCLK in its `gpu_metrics` table), plus, for an integrated GPU,
+the fan speed in rpm where the laptop's firmware reports a `gpu_fan` (ASUS laptops such as the Z13). An
 APU's VRAM is only the firmware carve-out (512 MiB on the Z13 at its BIOS minimum) while the GPU works out of system
 RAM mapped through GTT, so for an integrated AMD GPU the pane shows **GPU mem**: VRAM + GTT, used and total. GTT
 is ordinary system RAM, so it is also counted in the MEM readout: the two overlap and should not be added. An
@@ -203,8 +205,8 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
 - **Details.** Tap or click any part of a pane (the CPU, a GPU, memory, disk or network: graph or readout) for an
   overlay with everything the agent reports for that device: the values now, the average and peak over the last
   10 minutes or hour, every CPU thread, and charts of that span at one second per sample, including series the
-  panes don't draw (CPU frequency and temperature, GPU temperature, power and clock, disk reads and writes
-  separately, swap and commit). It updates live; close it with the X, Esc or a tap outside.
+  panes don't draw (CPU clock and temperature, GPU temperature, power and core and memory clocks, bytes read and
+  written in the span, swap and commit). It updates live; close it with the X, Esc or a tap outside.
 - **One machine.** Tap or click a machine's header row (its name, clock and uptime) to see it alone, at full size;
   again, or Esc or 0, to see all of them. Keys 1-9 jump to a machine. On touch screens a tap on the header while
   the controls are hidden only reveals them (the full-screen button sits over the header's right end).

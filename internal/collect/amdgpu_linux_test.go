@@ -42,9 +42,10 @@ func fakeAMD(t *testing.T, drm, card string, format byte, files map[string]strin
 func fixtures(t *testing.T, ids, cpuinfo string) {
 	t.Helper()
 	dir := t.TempDir()
-	oldIDs, oldCPU := amdgpuIDsPath, cpuinfoPath
+	oldIDs, oldCPU, oldHwmon := amdgpuIDsPath, cpuinfoPath, hwmonClassPath
 	amdgpuIDsPath, cpuinfoPath = filepath.Join(dir, "amdgpu.ids"), filepath.Join(dir, "cpuinfo")
-	t.Cleanup(func() { amdgpuIDsPath, cpuinfoPath = oldIDs, oldCPU })
+	hwmonClassPath = filepath.Join(dir, "hwmon") // empty unless a test adds devices
+	t.Cleanup(func() { amdgpuIDsPath, cpuinfoPath, hwmonClassPath = oldIDs, oldCPU, oldHwmon })
 	put(t, amdgpuIDsPath, ids)
 	put(t, cpuinfoPath, cpuinfo)
 }
@@ -187,5 +188,92 @@ func TestAMDFallbacks(t *testing.T) {
 	fakeAMD(t, drm2, "card0", 0, map[string]string{"mem_info_vram_total": "536870912", "mem_info_gtt_total": "1073741824"})
 	if g := findAMDIn(drm2); len(g) != 1 || !g[0].info.Integrated || !g[0].info.Shared {
 		t.Errorf("no gpu_metrics, 512 MiB VRAM: got %+v, want an integrated GPU with shared memory", g)
+	}
+}
+
+// Memory clock: an APU's comes from its gpu_metrics v3.0 table (average_uclk_frequency), a discrete
+// card's from hwmon freq2_input when that is labelled mclk. 0xFFFF in the table means unsupported.
+func TestAMDMemClock(t *testing.T) {
+	fixtures(t, idsFile, z13CPU)
+	table := func(uclk uint16) string {
+		b := make([]byte, 264) // the Z13's table: structure_size 264, format 3, content 0
+		b[0], b[1], b[2], b[3] = 8, 1, 3, 0
+		b[174], b[175] = 0x62, 0x02 // average_gfxclk_frequency 610
+		b[amdV3UclkOff], b[amdV3UclkOff+1] = byte(uclk), byte(uclk>>8)
+		return string(b)
+	}
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  int // 0: no memory clock
+		desc  string
+	}{
+		{"APU uclk", map[string]string{"mem_info_vram_total": "536870912", "gpu_metrics": table(701)}, 701, "gpu_metrics average_uclk_frequency"},
+		{"APU unsupported", map[string]string{"mem_info_vram_total": "536870912", "gpu_metrics": table(0xFFFF)}, 0, "gpu_metrics average_uclk_frequency"},
+		{"discrete mclk", map[string]string{"mem_info_vram_total": "8589934592", "hwmon/hwmon3/freq2_input": "1124000000", "hwmon/hwmon3/freq2_label": "mclk"}, 1124, "hwmon3/freq2_input"},
+		{"no source", map[string]string{"mem_info_vram_total": "8589934592"}, 0, "memory clock none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drm := t.TempDir()
+			dev := filepath.Join(drm, "card0", "device")
+			for name, v := range tc.files {
+				if name == "gpu_metrics" {
+					put(t, filepath.Join(dev, name), v) // binary, no newline
+				} else {
+					put(t, filepath.Join(dev, name), v+"\n")
+				}
+			}
+			if err := os.Symlink("../../../bus/pci/drivers/amdgpu", filepath.Join(dev, "driver")); err != nil {
+				t.Fatal(err)
+			}
+			gpus := findAMDIn(drm)
+			if len(gpus) != 1 {
+				t.Fatalf("found %d GPUs, want 1", len(gpus))
+			}
+			if d := gpus[0].describe(); !strings.Contains(d, tc.desc) {
+				t.Errorf("describe() = %q, missing %q", d, tc.desc)
+			}
+			var s proto.Sample
+			(&linux{amd: gpus}).collectGPU(&s)
+			mk := s.GPU[0].MemClock
+			switch {
+			case tc.want == 0 && mk != nil:
+				t.Errorf("MemClock = %d, want none", *mk)
+			case tc.want != 0 && (mk == nil || *mk != tc.want):
+				t.Errorf("MemClock = %v, want %d MHz", mk, tc.want)
+			}
+		})
+	}
+}
+
+// The Z13's GPU fan is reported by its ASUS firmware (hwmon "asus": fan1 cpu_fan, fan2 gpu_fan, rpm),
+// not by amdgpu; an integrated GPU takes the gpu_fan, a discrete card does not.
+func TestAMDFirmwareGPUFan(t *testing.T) {
+	fixtures(t, idsFile, z13CPU)
+	put(t, filepath.Join(hwmonClassPath, "hwmon9", "name"), "asus\n")
+	put(t, filepath.Join(hwmonClassPath, "hwmon9", "fan1_input"), "8700\n")
+	put(t, filepath.Join(hwmonClassPath, "hwmon9", "fan1_label"), "cpu_fan\n")
+	put(t, filepath.Join(hwmonClassPath, "hwmon9", "fan2_input"), "8800\n")
+	put(t, filepath.Join(hwmonClassPath, "hwmon9", "fan2_label"), "gpu_fan\n")
+	drm := t.TempDir()
+	fakeAMD(t, drm, "card1", 3, map[string]string{"mem_info_vram_total": "536870912"})  // APU
+	fakeAMD(t, drm, "card0", 1, map[string]string{"mem_info_vram_total": "8589934592"}) // discrete
+	gpus := findAMDIn(drm)
+	if len(gpus) != 2 || gpus[0].info.Integrated || !gpus[1].info.Integrated {
+		t.Fatalf("got %+v, want discrete then integrated", gpus)
+	}
+	if gpus[0].fan != "" {
+		t.Errorf("discrete card took the firmware fan %q", gpus[0].fan)
+	}
+	if d := gpus[1].describe(); !strings.Contains(d, "fan hwmon9/fan2_input (asus gpu_fan, rpm)") {
+		t.Errorf("describe() = %q, want the asus gpu_fan", d)
+	}
+	var s proto.Sample
+	(&linux{amd: gpus}).collectGPU(&s)
+	if f := s.GPU[1].FanRPM; f == nil || *f != 8800 {
+		t.Errorf("FanRPM = %v, want 8800 (gpu_fan, not cpu_fan)", f)
+	}
+	if s.GPU[0].FanRPM != nil || s.GPU[1].Fan != nil {
+		t.Errorf("discrete FanRPM %v, integrated Fan %% %v; want both unset", s.GPU[0].FanRPM, s.GPU[1].Fan)
 	}
 }

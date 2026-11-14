@@ -72,6 +72,14 @@ type amdGPU struct {
 	temp  string // temp1_input, millidegrees (edge)
 	power string // power1_input or power1_average, microwatts (PPT on an APU)
 	clock string // freq1_input, Hz (sclk)
+	// Memory clock: hwmon freq2_input (mclk, Hz) on a discrete card, or on an APU the time-filtered
+	// UCLK in its gpu_metrics table (uclkOff > 0), since an APU's hwmon has no mclk and its
+	// pp_dpm_mclk marks no current level.
+	memClock string
+	uclkOff  int
+	// fan: fanN_input (rpm) of a firmware hwmon fan labelled gpu_fan, for an integrated GPU, whose
+	// own hwmon has no fan (the Z13's ASUS firmware, hwmon "asus", reports cpu_fan and gpu_fan).
+	fan string
 }
 
 // describe says which sysfs files feed this GPU, for --probe.
@@ -82,12 +90,22 @@ func (a amdGPU) describe() string {
 	} else {
 		parts = append(parts, "memory mem_info_vram_used")
 	}
-	for _, f := range [][2]string{{"temp", a.temp}, {"power", a.power}, {"clock", a.clock}} {
+	memClock := a.memClock
+	if a.uclkOff > 0 {
+		memClock = filepath.Join(a.dir, "gpu_metrics") + " (average_uclk_frequency)"
+	}
+	for _, f := range [][2]string{{"temp", a.temp}, {"power", a.power}, {"clock", a.clock}, {"memory clock", memClock}, {"fan", a.fan}} {
 		if f[1] == "" {
 			parts = append(parts, f[0]+" none")
 			continue
 		}
 		s := f[0] + " " + filepath.Base(filepath.Dir(f[1])) + "/" + filepath.Base(f[1])
+		if f[0] == "memory clock" && a.uclkOff > 0 {
+			s = f[0] + " gpu_metrics average_uclk_frequency"
+		}
+		if f[0] == "fan" {
+			s += " (" + readTrim(filepath.Join(filepath.Dir(f[1]), "name")) + " gpu_fan, rpm)"
+		}
 		if f[0] == "power" && a.info.Integrated {
 			s += " (PPT: the whole package, CPU + GPU)"
 		}
@@ -235,8 +253,9 @@ func (c *linux) findGPUs() {
 
 // Files the AMD discovery reads besides sysfs; variables so tests can point them at fixtures.
 var (
-	amdgpuIDsPath = "/usr/share/libdrm/amdgpu.ids" // libdrm's marketing names by PCI device and revision
-	cpuinfoPath   = "/proc/cpuinfo"
+	amdgpuIDsPath  = "/usr/share/libdrm/amdgpu.ids" // libdrm's marketing names by PCI device and revision
+	hwmonClassPath = "/sys/class/hwmon"             // for fans other drivers report on a GPU's behalf
+	cpuinfoPath    = "/proc/cpuinfo"
 )
 
 func findAMD() []amdGPU { return findAMDIn("/sys/class/drm") }
@@ -260,6 +279,49 @@ func amdIsAPU(dev string) (apu, known bool) {
 		return true, true
 	}
 	return false, false
+}
+
+// gpu_metrics v3.0 (APUs such as Strix Halo, the Z13's Ryzen AI Max+ 395) keeps
+// average_uclk_frequency, a uint16 in MHz, at this byte offset (kernel kgd_pp_interface.h,
+// struct gpu_metrics_v3_0, natural alignment; checked on the Z13 on 2026-11-13: gfx clock read
+// there matches hwmon freq1_input, and the socket power at 112 matches power1_input).
+const amdV3UclkOff = 186
+
+// amdUclkOffset returns where to read the memory clock in dev's gpu_metrics table, or 0 when its
+// layout is not one we know.
+func amdUclkOffset(dev string) int {
+	b, err := os.ReadFile(filepath.Join(dev, "gpu_metrics"))
+	if err != nil || len(b) < amdV3UclkOff+2 {
+		return 0
+	}
+	if size := int(b[0]) | int(b[1])<<8; b[2] == 3 && b[3] == 0 && size >= amdV3UclkOff+2 {
+		return amdV3UclkOff
+	}
+	return 0
+}
+
+// amdMetricU16 reads one uint16 from dev's gpu_metrics table; 0 and 0xFFFF (unsupported) are not values.
+func amdMetricU16(dev string, off int) (uint16, bool) {
+	b, err := os.ReadFile(filepath.Join(dev, "gpu_metrics"))
+	if err != nil || len(b) < off+2 {
+		return 0, false
+	}
+	v := uint16(b[off]) | uint16(b[off+1])<<8
+	return v, v != 0 && v != 0xFFFF
+}
+
+// findLabeledFan returns the fanN_input whose fanN_label is label, from any hwmon device, or "".
+func findLabeledFan(label string) string {
+	labels, _ := filepath.Glob(filepath.Join(hwmonClassPath, "hwmon*", "fan*_label"))
+	sort.Strings(labels)
+	for _, l := range labels {
+		if readTrim(l) == label {
+			if in := strings.TrimSuffix(l, "_label") + "_input"; exists(in) {
+				return in
+			}
+		}
+	}
+	return ""
 }
 
 // amdName names an amdgpu device. product_name comes from a board FRU EEPROM, which APUs lack, so
@@ -344,6 +406,15 @@ func findAMDIn(drm string) []amdGPU {
 			if exists(filepath.Join(h, "freq1_input")) {
 				g.clock = filepath.Join(h, "freq1_input")
 			}
+			if exists(filepath.Join(h, "freq2_input")) && readTrim(filepath.Join(h, "freq2_label")) == "mclk" {
+				g.memClock = filepath.Join(h, "freq2_input")
+			}
+		}
+		if g.memClock == "" {
+			g.uclkOff = amdUclkOffset(dev)
+		}
+		if integrated {
+			g.fan = findLabeledFan("gpu_fan")
 		}
 		g.info = proto.GPUInfo{Name: CleanGPUName(name), Vendor: "amd", MemTotal: int64(total), Integrated: integrated, Shared: g.gtt}
 		if !vramOK {
@@ -884,6 +955,20 @@ func (c *linux) collectGPU(s *proto.Sample) {
 			if a.clock != "" {
 				if v, ok := readUint(a.clock); ok {
 					g.Clock = proto.Int(int(v / 1_000_000))
+				}
+			}
+			if a.memClock != "" {
+				if v, ok := readUint(a.memClock); ok && v > 0 {
+					g.MemClock = proto.Int(int(v / 1_000_000))
+				}
+			} else if a.uclkOff > 0 {
+				if v, ok := amdMetricU16(a.dir, a.uclkOff); ok {
+					g.MemClock = proto.Int(int(v))
+				}
+			}
+			if a.fan != "" {
+				if v, ok := readUint(a.fan); ok {
+					g.FanRPM = proto.Int(int(v)) // 0 is a real reading: the fan stopped
 				}
 			}
 		}

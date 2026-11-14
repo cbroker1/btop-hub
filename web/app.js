@@ -99,9 +99,9 @@ let clockOffset = 0; // hub clock minus this browser's clock, ms
 const hubNow = () => Date.now() + clockOffset;
 
 // Per machine, the last hour of samples as parallel arrays (NaN where a value is missing). The
-// panes draw cpu, gu, gm, mu, mc, dio, nr and nt; the detail overlay uses the rest too.
-const SERIES = ['t', 'mu', 'mc', 'su', 'cu', 'dio', 'dr', 'dw', 'nr', 'nt', 'cf', 'ct'];
-const GPU_SERIES = ['gu', 'gm', 'gt', 'gp', 'gck', 'gtx', 'grx'];
+// panes draw cpu, gu, gm, mu, mc, dr, dw, nr and nt; the detail overlay uses the rest too.
+const SERIES = ['t', 'mu', 'mc', 'su', 'cu', 'dr', 'dw', 'nr', 'nt', 'cf', 'ct'];
+const GPU_SERIES = ['gu', 'gm', 'gt', 'gp', 'gck', 'gmk', 'gtx', 'grx'];
 function makeMachine(j) {
   const info = j.info || {};
   const T = info.threads || 0, G = (info.gpus || []).length;
@@ -136,10 +136,9 @@ function push(m, s) {
     const gs = (s.g && s.g[g]) || {};
     m.gu[g][i] = gs.u != null ? gs.u / 1000 : NaN;
     m.gm[g][i] = num(gs.m); m.gt[g][i] = num(gs.t); m.gp[g][i] = num(gs.p);
-    m.gck[g][i] = num(gs.ck); m.gtx[g][i] = num(gs.tx); m.grx[g][i] = num(gs.rx);
+    m.gck[g][i] = num(gs.ck); m.gmk[g][i] = num(gs.mk); m.gtx[g][i] = num(gs.tx); m.grx[g][i] = num(gs.rx);
   }
   m.mu[i] = num(s.mu); m.mc[i] = num(s.mc); m.su[i] = num(s.su); m.cu[i] = num(s.cu);
-  m.dio[i] = s.dr == null && s.dw == null ? NaN : (s.dr || 0) + (s.dw || 0);
   m.dr[i] = num(s.dr); m.dw[i] = num(s.dw);
   m.nr[i] = num(s.nr); m.nt[i] = num(s.nt);
   m.cf[i] = num(s.cf); m.ct[i] = num(s.ct);
@@ -282,8 +281,8 @@ function aggregate(m, now) {
   const a = {
     cpuSum: new Float64Array(80 * T), cpuMax: new Float64Array(80 * T), cpuCnt: new Uint16Array(80),
     gu: m.gu.map(() => stat(80)), gm: m.gm.map(() => stat(80)),
-    mu: stat(80), mc: stat(80), dio: stat(80), nr: stat(80), nt: stat(80),
-    peakRx: NaN, peakTx: NaN,
+    mu: stat(80), mc: stat(80), dr: stat(80), dw: stat(80), nr: stat(80), nt: stat(80),
+    peakRx: NaN, peakTx: NaN, peakDr: NaN, peakDw: NaN,
   };
   let i = 0;
   while (i < m.n && m.t[i] < E[0]) i++;
@@ -301,10 +300,12 @@ function aggregate(m, now) {
       }
     }
     for (let g = 0; g < m.G; g++) { addTo(a.gu[g], col, m.gu[g][i]); addTo(a.gm[g], col, m.gm[g][i]); }
-    addTo(a.mu, col, m.mu[i]); addTo(a.mc, col, m.mc[i]); addTo(a.dio, col, m.dio[i]);
+    addTo(a.mu, col, m.mu[i]); addTo(a.mc, col, m.mc[i]); addTo(a.dr, col, m.dr[i]); addTo(a.dw, col, m.dw[i]);
     addTo(a.nr, col, m.nr[i]); addTo(a.nt, col, m.nt[i]);
     if (m.nr[i] === m.nr[i] && !(m.nr[i] <= a.peakRx)) a.peakRx = m.nr[i];
     if (m.nt[i] === m.nt[i] && !(m.nt[i] <= a.peakTx)) a.peakTx = m.nt[i];
+    if (m.dr[i] === m.dr[i] && !(m.dr[i] <= a.peakDr)) a.peakDr = m.dr[i];
+    if (m.dw[i] === m.dw[i] && !(m.dw[i] <= a.peakDw)) a.peakDw = m.dw[i];
   }
   return a;
 }
@@ -613,14 +614,18 @@ function drawPane(m, now) {
   ylabel('100', L.mem, L.mem, L.mem + 5);
   ylabel('0', L.mem + 5, L.mem, L.mem + 5);
 
-  // Disk I/O: read + write on the fixed log scale.
-  const hasDisk = c => a.dio.cnt[c] > 0;
+  // Disk I/O, as the network: reads up from the centre line, writes down, on the fixed log scale.
+  const DH = 3.5, dmid = L.disk + DH;
+  const hasDisk = c => a.dr.cnt[c] > 0 || a.dw.cnt[c] > 0;
   stripBg(L.disk, L.disk + 7, hasDisk);
-  for (let c = 0; c < GW; c++) if (hasDisk(c)) areaCol(c, L.disk + 7, -1, 7, logFrac(mean(a.dio, c)), logFrac(a.dio.max[c]), 'down');
+  for (let c = 0; c < GW; c++) {
+    if (a.dr.cnt[c]) areaCol(c, dmid, -1, DH, logFrac(mean(a.dr, c)), logFrac(a.dr.max[c]), 'down');
+    if (a.dw.cnt[c]) areaCol(c, dmid, 1, DH, logFrac(mean(a.dw, c)), logFrac(a.dw.max[c]), 'up');
+  }
   edgeRules(L.disk, L.disk + 7, hasDisk);
   ylabel('1G', L.disk, L.disk, L.disk + 7);
-  ylabel('1M', L.disk + 3.5, L.disk, L.disk + 7);
-  ylabel('1K', L.disk + 7, L.disk, L.disk + 7);
+  ylabel('1K', dmid, L.disk, L.disk + 7);
+  ylabel('1G', L.disk + 7, L.disk, L.disk + 7);
 
   // Network: download up from the centre line, upload down.
   const NR = L.netRows, half = NR / 2, mid = L.net + half;
@@ -654,7 +659,7 @@ function drawPane(m, now) {
   drawCPU(m, info, s, L);
   for (const G of L.gpus) drawGPU(m, info, s, G);
   drawMem(info, s, L.mem);
-  drawDisk(info, s, L.disk);
+  drawDisk(info, s, a, L.disk);
   drawNet(info, s, a, L.net, NR);
   ctx.globalAlpha = 1;
 }
@@ -711,7 +716,7 @@ function drawCPU(m, info, s, L) {
   textR(REND, r, loads ? pct(avg) : 'n/a', C.text, true);
   text(RX, r + 1, info.cpu || 'n/a', C.dim);
   textR(REND, r + 1, (info.cores ? info.cores + 'c / ' : '') + (T || '?') + 't', C.dim);
-  text(RX, r + 2, s.cf != null ? freq(s.cf) : 'n/a', C.dim);
+  text(RX, r + 2, 'clock ' + (s.cf != null ? freq(s.cf) : 'n/a'), C.dim);
   let right;
   if (!info.hasTemp) right = 'no temp sensor';
   else right = (s.ct != null ? Math.round(s.ct) + '°C' : 'n/a') + (s.la && s.la.length ? ' · load ' + s.la[0].toFixed(1) : '');
@@ -745,7 +750,9 @@ function drawGPU(m, info, s, G) {
   textR(REND, r, gs.u != null ? pct(gs.u / 1000) : 'n/a', C.text, true);
   text(RX, r + 1, gin.name || 'n/a', C.dim);
   if (!G.vram) { // compact: one more GPU
-    let extra = gs.p != null ? ' · ' + Math.round(gs.p) + ' W' : '';
+    const used = glyphs(gin.name || 'n/a') + 1 + glyphs(gs.t != null ? Math.round(gs.t) + '°C' : 'n/a');
+    const pw = gs.p != null ? ' · ' + Math.round(gs.p) + ' W' : '', ck = gs.ck != null ? ' · ' + gs.ck + ' MHz' : '';
+    let extra = fit(used, pw + ck, pw, ck);
     if (gs.t != null && gs.t >= ALERT.gpuTempC) { badgeR(REND - glyphs(extra), r + 1, Math.round(gs.t) + '°C'); textR(REND, r + 1, extra, C.dim); }
     else textR(REND, r + 1, (gs.t != null ? Math.round(gs.t) + '°C' : 'n/a') + extra, C.dim);
     text(RX, r + 2, gin.shared ? 'gpu mem' : 'vram', C.dim);
@@ -755,14 +762,13 @@ function drawGPU(m, info, s, G) {
   gpuTemp(gs, REND, r + 1);
   if (gs.p != null) {
     text(RX, r + 2, gin.shared ? 'package' : 'power', C.dim); // an APU's PPT covers CPU + GPU
-    textR(REND, r + 2, Math.round(gs.p) + ' W' + (gs.ps != null ? ' · P' + gs.ps : '') + (gs.f != null ? ' · fan ' + gs.f + '%' : ''), C.dim);
-  } else if (gs.ck != null) {
-    text(RX, r + 2, 'clock', C.dim);
-    textR(REND, r + 2, gs.ck + ' MHz', C.dim);
+    textR(REND, r + 2, Math.round(gs.p) + ' W' + (gs.ps != null ? ' · P' + gs.ps : '') + (gpuFan(gs) ? ' · fan ' + gpuFan(gs) : ''), C.dim);
   }
+  text(RX, r + 3, 'clock', C.dim);
+  textR(REND, r + 3, gpuClocks(gs), C.dim);
   if (gs.tx != null && gs.rx != null) {
-    text(RX, r + 3, 'pcie', C.dim);
-    textR(REND, r + 3, fit(4, `▲ ${rate(gs.tx)} · ▼ ${rate(gs.rx)}`, `▲ ${rate(gs.tx)} ▼ ${rate(gs.rx)}`), C.dim);
+    text(RX, r + 4, 'pcie', C.dim);
+    textR(REND, r + 4, fit(4, `▲ ${rate(gs.tx)} · ▼ ${rate(gs.rx)}`, `▲ ${rate(gs.tx)} ▼ ${rate(gs.rx)}`), C.dim);
   }
   const v = G.vram - 1, tot = gin.memTotal;
   text(RX, v, gin.shared ? 'GPU mem' : 'VRAM', C.text, true);
@@ -770,8 +776,18 @@ function drawGPU(m, info, s, G) {
   bar(RX, REND, v + 1, tot > 0 && gs.m != null ? [[gs.m / tot, C.fill]] : []);
   const inUse = tot > 0 && gs.m != null ? pct(gs.m / tot) + ' in use' : 'n/a';
   text(RX, v + 2, inUse, C.dim);
-  if (gs.ck != null && gs.mk != null) textR(REND, v + 2, fit(glyphs(inUse), `clocks ${gs.ck} / ${gs.mk} MHz`, `${gs.ck} / ${gs.mk} MHz`), C.dim);
-  else if (gs.ck != null && gs.p != null) textR(REND, v + 2, fit(glyphs(inUse), `clock ${gs.ck} MHz`, `${gs.ck} MHz`), C.dim); // without power, row r + 2 already shows it
+}
+
+// Fan as a percentage where the driver gives one, else the speed (the Z13's firmware reports rpm only).
+const gpuFan = gs => (gs.f != null ? gs.f + '%' : gs.fr != null ? gs.fr + ' rpm' : '');
+
+// "core 1575 · mem 7601 MHz", or whichever of the two the GPU reports.
+function gpuClocks(gs) {
+  const c = gs.ck != null, k = gs.mk != null;
+  if (c && k) return fit(5, `core ${gs.ck} · mem ${gs.mk} MHz`, `${gs.ck} / ${gs.mk} MHz`);
+  if (c) return `core ${gs.ck} MHz`;
+  if (k) return `mem ${gs.mk} MHz`;
+  return 'n/a';
 }
 
 function drawMem(info, s, r) {
@@ -804,7 +820,7 @@ function drawMem(info, s, r) {
   }
 }
 
-function drawDisk(info, s, r) {
+function drawDisk(info, s, a, r) {
   const d = info.disk || {}, label = 'DISK ' + (d.label || '');
   const used = num(s.du), tot = num(s.dt), f = used / tot;
   const alert = f * 100 >= ALERT.diskPct;
@@ -814,10 +830,12 @@ function drawDisk(info, s, r) {
   bar(RX, REND, r + 1, isFinite(f) ? [[f, alert ? C.alert : C.fill]] : []);
   const model = [shortModel(d.model), d.bus].filter(Boolean).join(' · ');
   text(RX, r + 2, model, C.dim);
-  text(RX, r + 3, 'io, read + write', C.dim);
-  textR(REND, r + 3, s.dr == null && s.dw == null ? 'n/a' : rate((s.dr || 0) + (s.dw || 0)), C.text);
-  text(RX, r + 4, 'scale', C.dim);
-  textR(REND, r + 4, 'log, bytes per second', C.dim);
+  text(RX, r + 3, '▼', C.down); text(RX + 2, r + 3, 'read', C.text); textR(REND, r + 3, rate(num(s.dr)), C.text, true);
+  text(RX, r + 4, '▲', C.up); text(RX + 2, r + 4, 'write', C.text); textR(REND, r + 4, rate(num(s.dw)), C.text, true);
+  text(RX, r + 5, 'peak', C.dim);
+  textR(REND, r + 5, fit(4, `▼ ${rate(a.peakDr)} · ▲ ${rate(a.peakDw)}`, `▼ ${rate(a.peakDr)} ▲ ${rate(a.peakDw)}`), C.dim);
+  text(RX, r + 6, 'scale', C.dim);
+  textR(REND, r + 6, 'log, bytes per second', C.dim);
 }
 
 function drawNet(info, s, a, r, rows) {
@@ -1038,12 +1056,12 @@ const DETAIL = {
       ['load, all threads', pct(loads ? loads.reduce((a, b) => a + b, 0) / T : NaN), pct(load.avg), pct(load.max)],
       ['busiest thread', loads ? `C${busy} ${pct(loads[busy])}` : 'n/a', '', topK >= 0 ? `C${topK} ${pct(top)}` : 'n/a'],
       ['threads under 5%', loads ? `${loads.filter(v => v < 0.05).length} of ${T}` : 'n/a', '', ''],
-      ['frequency', ghz(num(s.cf)), ghz(fq.avg), ghz(fq.max)],
+      ['clock', ghz(num(s.cf)), ghz(fq.avg), ghz(fq.max)],
       info.hasTemp ? ['temperature', degC(num(s.ct)), degC(tp.avg), degC(tp.max)] : ['temperature', 'no sensor', '', ''],
     ];
     if (s.la && s.la.length === 3) rows.push(['load average, 1 5 15 min', s.la.map(v => v.toFixed(2)).join('  '), '', '']);
     const strips = [{ label: 'load, all threads', scale: 'pct', ramp: 'load', get: avgLoad, fmt: pct }];
-    if (fq.n) strips.push({ label: 'frequency', scale: 'zero', ramp: 'load', get: i => m.cf[i], fmt: ghz });
+    if (fq.n) strips.push({ label: 'clock', scale: 'zero', ramp: 'load', get: i => m.cf[i], fmt: ghz });
     if (tp.n) strips.push({ label: 'temperature', scale: 'range', ramp: 'load', get: i => m.ct[i], fmt: degC });
     return {
       title: 'CPU',
@@ -1057,7 +1075,7 @@ const DETAIL = {
     const memLabel = gin.shared ? 'GPU memory used' : 'VRAM used';
     const powerLabel = gin.shared ? 'package power (CPU + GPU)' : 'power';
     const ut = over(m, i0, i => m.gu[g][i]), vm = over(m, i0, i => m.gm[g][i]), tp = over(m, i0, i => m.gt[g][i]);
-    const pw = over(m, i0, i => m.gp[g][i]), ck = over(m, i0, i => m.gck[g][i]);
+    const pw = over(m, i0, i => m.gp[g][i]), ck = over(m, i0, i => m.gck[g][i]), mk = over(m, i0, i => m.gmk[g][i]);
     const tx = over(m, i0, i => m.gtx[g][i]), rx = over(m, i0, i => m.grx[g][i]);
     const rows = [
       ['utilisation', pct(gs.u != null ? gs.u / 1000 : NaN), pct(ut.avg), pct(ut.max)],
@@ -1065,9 +1083,9 @@ const DETAIL = {
       ['temperature', degC(num(gs.t)), degC(tp.avg), degC(tp.max)],
       [powerLabel, watts(num(gs.p)), watts(pw.avg), watts(pw.max)],
       ['core clock', mhz(num(gs.ck)), mhz(ck.avg), mhz(ck.max)],
-      ['memory clock', mhz(num(gs.mk)), '', ''],
+      ['memory clock', mhz(num(gs.mk)), mhz(mk.avg), mhz(mk.max)],
       ['performance state', gs.ps != null ? 'P' + gs.ps : 'n/a', '', ''],
-      ['fan', gs.f != null ? gs.f + '%' : 'n/a', '', ''],
+      ['fan', gpuFan(gs) || 'n/a', '', ''],
       ['PCIe ▲ tx', rate(num(gs.tx)), rate(tx.avg), rate(tx.max)],
       ['PCIe ▼ rx', rate(num(gs.rx)), rate(rx.avg), rate(rx.max)],
     ];
@@ -1078,6 +1096,7 @@ const DETAIL = {
     if (tp.n) strips.push({ label: 'temperature', scale: 'range', ramp: 'load', get: i => m.gt[g][i], fmt: degC });
     if (pw.n) strips.push({ label: powerLabel, scale: 'zero', ramp: 'load', get: i => m.gp[g][i], fmt: watts });
     if (ck.n) strips.push({ label: 'core clock', scale: 'zero', ramp: 'load', get: i => m.gck[g][i], fmt: mhz });
+    if (mk.n) strips.push({ label: 'memory clock', scale: 'zero', ramp: 'load', get: i => m.gmk[g][i], fmt: mhz });
     const vendor = { nvidia: 'NVIDIA', amd: 'AMD', intel: 'Intel' }[gin.vendor] || '';
     return {
       title: (m.G > 1 ? 'GPU ' + g : 'GPU') + (gin.name ? ' · ' + gin.name : ''),

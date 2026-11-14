@@ -770,8 +770,8 @@ function drawGPU(m, info, s, G) {
   text(RX, v, gin.shared ? 'GPU mem' : 'VRAM', C.text, true);
   textR(REND, v, pair(num(gs.m), tot > 0 ? tot : NaN), C.text);
   bar(RX, REND, v + 1, tot > 0 && gs.m != null ? [[gs.m / tot, C.fill]] : []);
-  const inUse = tot > 0 && gs.m != null ? pct(gs.m / tot) + ' in use' : 'n/a';
-  text(RX, v + 2, inUse, C.dim);
+  // Free, from the unrounded values and formatted as the used / total line (the bar shows the share).
+  text(RX, v + 2, tot > 0 && gs.m != null ? size(Math.max(0, tot - gs.m)) + ' free' : 'n/a', C.dim);
 }
 
 // Fan as a percentage where the driver gives one, else the speed (the Z13's firmware reports rpm only).

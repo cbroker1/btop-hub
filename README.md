@@ -173,8 +173,8 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
 - **Time axis.** 80 columns cover the last hour: the left edge is an hour ago, the right edge is now. Ticks sit at
   1h, 30m, 15m, 8m, 4m, 2m, 1m and now; between ticks time is geometric, and the last minute is linear (3.75 s per
   column). Each column shows the mean and the peak of the 1-second samples it covers: the band height is the mean,
-  the faint veil and the thin cap above it reach the peak. The caption under each pane says how much time one
-  column spans at each end.
+  the faint veil and the thin cap above it reach the peak. The caption row under each pane ("col =") gives, under
+  each tick, the time one column starting there covers: 3.7m, 1.8m, 1m, 29s, 15s, 7.3s and 3.8s.
 - **CPU.** One half-height row per logical thread, coloured by load from dark (idle) through red and orange to pale
   yellow (busy). Beside it, the busiest threads in descending order (as many as fit beside the strip, 11) and how
   many threads are under 5%.

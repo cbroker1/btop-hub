@@ -78,12 +78,14 @@ function edgeAge(x) {
 }
 const EDGE = Array.from({ length: 81 }, (_, x) => edgeAge(x));
 const GUIDE_COLS = [11, 22, 31, 42, 53, 64];
-function fmtSpan(sec) {
-  if (sec >= 60) return (sec / 60).toFixed(1) + ' min';
-  return String(+sec.toFixed(2)) + ' s';
+// Time one column covers: minutes from 60 s up, else seconds; one decimal below 10, none from 10
+// up, no trailing ".0" (3.7m, 1m, 29s, 7.3s).
+function fmtCol(sec) {
+  const m = sec >= 60, v = m ? sec / 60 : sec;
+  return String(v < 10 ? +v.toFixed(1) : Math.round(v)) + (m ? 'm' : 's');
 }
-const SPAN_LEFT = fmtSpan(EDGE[0] - EDGE[1]);
-const SPAN_RIGHT = fmtSpan(EDGE[79] - EDGE[80]);
+// Under each tick but "now": the time covered by the column that starts there.
+const COL_SPANS = TICKS.slice(0, -1).map(([c]) => fmtCol(EDGE[c] - EDGE[c + 1]));
 
 // ---- Pane grid -----------------------------------------------------------------------
 const COLS = 120, ROWS = 64, GUTTER = 2;
@@ -644,17 +646,9 @@ function drawPane(m, now) {
   ylabel('1M', mid + half / 2, L.net, L.net + NR);
   ylabel('1G', L.net + NR, L.net, L.net + NR);
 
-  // Caption row: the span of a column at each end of the axis, or why part of it is blank. The
-  // left caption takes the longest wording that leaves a cell before the right one.
-  const right = 'one column = ' + SPAN_RIGHT + ' here';
-  const boot = info.boot;
-  const blank = !hasCpu(0) && !hasMem(0);
-  let lefts = ['one column = ' + SPAN_LEFT + ' here'];
-  if (boot && now - boot < 3600e3 && blank) lefts = [`blank = before boot, ${Math.round((now - boot) / 60000)} min ago`, 'blank = before boot'];
-  else if ([...Array(GW).keys()].some(c => !hasMem(c) && !hasCpu(c))) lefts = ['blank = no data (asleep or agent stopped)', 'blank = no data (asleep or stopped)', 'blank = no data'];
-  const room = (colX(GX + GW) - colX(GX)) * zs - textW(right) - cellPx();
-  text(GX, 62, lefts.find(v => textW(v) <= room + 0.5) || '', C.dim); // + 0.5: an exact fit survives rounding
-  textR(GX + GW, 62, right, C.dim);
+  // Caption row: under each tick label, the time one column starting at that tick covers.
+  textR(GX - 1, 62, 'col =', C.dim);
+  for (let i = 0; i < COL_SPANS.length; i++) text(GX + TICKS[i][0] + 1, 62, COL_SPANS[i], C.dim);
 
   // Readouts, dimmed while offline.
   ctx.globalAlpha = offline ? 0.45 : 1;

@@ -330,6 +330,11 @@ function aggregate(m, now) {
 }
 
 // ---- Pane layout (rows) ----------------------------------------------------------------
+// A machine whose main GPU works out of system memory (an APU: info.gpus[0].shared): CPU and GPU
+// share one pool, so the pane shows it once, as used over total in MEM, and the GPU block has no
+// memory section. A discrete card sorts first, so an idle iGPU beside one does not count.
+const unifiedMem = info => !!(((info && info.gpus) || [])[0] || {}).shared;
+
 function paneRows(m) {
   const L = { cpu: 4, gpus: [] };
   let r = 21;
@@ -337,12 +342,15 @@ function paneRows(m) {
   // A full GPU block: the load graph (util rows), its baseline row, the VRAM strip (2 rows) and a
   // gap row. Its readout needs 5 lines above the VRAM line, so util is at least 5.
   const full = (g, util) => { L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 }); r += util + 4; };
-  if (G > 0) full(0, 8);
+  if (G > 0) {
+    if (unifiedMem(m.info)) { L.gpus.push({ g: 0, top: r, util: 11, h: 12 }); r += 12; } // load graph takes the memory rows
+    else full(0, 8);
+  }
   for (let g = 1; g < G; g++) {
     // Further GPUs get the same readout as the first while the network strip keeps 5 rows (its
     // readout's NET, address, download, upload and peak lines); else the compact 4-row one.
     if (r + 9 + 6 + 8 + 5 <= 61) full(g, 5);
-    else if (r + 4 + 6 + 8 + 6 <= 61) { L.gpus.push({ g, top: r, util: 3, h: 4 }); r += 4; }
+    else if (r + 4 + 6 + 8 + 6 <= 61) { L.gpus.push({ g, top: r, util: 3, h: 4, compact: true }); r += 4; }
   }
   L.mem = r; r += 6;
   L.disk = r; r += 8;
@@ -627,8 +635,8 @@ function drawPane(m, now) {
     ylabel('0', top + G.util, top, top + G.util);
   }
 
-  // Memory: used, with cached stacked above.
-  const memTot = info.memTotal;
+  // Memory: used, with cached stacked above (used only where CPU and GPU share it).
+  const memTot = info.memTotal, uni = unifiedMem(info);
   const hasMem = c => a.mu.cnt[c] > 0;
   stripBg(L.mem, L.mem + 5, hasMem);
   if (memTot > 0) {
@@ -636,7 +644,7 @@ function drawPane(m, now) {
     for (let c = 0; c < GW; c++) {
       if (!hasMem(c)) continue;
       const u = Math.max(1 / 40, mean(a.mu, c) / memTot);
-      if (a.mc.cnt[c]) flatCol(c, base, 5, Math.round(u * 40) / 40, Math.min(1, u + mean(a.mc, c) / memTot), C.histCached);
+      if (a.mc.cnt[c] && !uni) flatCol(c, base, 5, Math.round(u * 40) / 40, Math.min(1, u + mean(a.mc, c) / memTot), C.histCached);
       flatCol(c, base, 5, 0, u, C.hist);
     }
   }
@@ -774,7 +782,7 @@ function drawGPU(m, info, s, G) {
   text(RX, r, m.G > 1 ? 'GPU ' + gi : 'GPU', C.text, true);
   textR(REND, r, gs.u != null ? pct(gs.u / 1000) : 'n/a', C.text, true);
   text(RX, r + 1, gin.name || 'n/a', C.dim);
-  if (!G.vram) { // compact: one more GPU
+  if (G.compact) { // compact: one more GPU
     const used = glyphs(gin.name || 'n/a') + 1 + glyphs(gs.t != null ? Math.round(gs.t) + '°C' : 'n/a');
     const pw = gs.p != null ? ' · ' + Math.round(gs.p) + ' W' : '', ck = gs.ck != null ? ' · ' + gs.ck + ' MHz' : '';
     let extra = fit(used, pw + ck, pw, ck);
@@ -795,6 +803,7 @@ function drawGPU(m, info, s, G) {
     text(RX, r + 4, 'pcie', C.dim);
     textR(REND, r + 4, fit(4, `▲ ${rate(gs.tx)} · ▼ ${rate(gs.rx)}`, `▲ ${rate(gs.tx)} ▼ ${rate(gs.rx)}`), C.dim);
   }
+  if (!G.vram) return; // shared memory: shown once, in MEM
   const v = G.vram - 1, tot = gin.memTotal;
   text(RX, v, gin.shared ? 'GPU mem' : 'VRAM', C.text, true);
   textR(REND, v, pair(num(gs.m), tot > 0 ? tot : NaN), C.text);
@@ -822,6 +831,10 @@ function drawMem(info, s, r) {
   text(RX, r, 'MEM', C.text, true);
   if (uf * 100 >= ALERT.memPct) badge(c + 1, r, pct(uf));
   textR(REND, r, pair(used, tot > 0 ? tot : NaN), C.text);
+  if (unifiedMem(info)) { // one pool for CPU and GPU: used over total, nothing else
+    bar(RX, REND, r + 1, [[uf, uf * 100 >= ALERT.memPct ? C.alert : C.fill]]);
+    return;
+  }
   const cf = isFinite(cached) ? cached / tot : 0, ff = isFinite(free) ? free / tot : NaN;
   const other = isFinite(ff) ? Math.max(0, 1 - uf - cf - ff) : 0;
   bar(RX, REND, r + 1, [[uf, uf * 100 >= ALERT.memPct ? C.alert : C.fill], [cf, C.cached], [other, C.other]]);

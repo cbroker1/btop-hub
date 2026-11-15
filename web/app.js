@@ -334,8 +334,16 @@ function paneRows(m) {
   const L = { cpu: 4, gpus: [] };
   let r = 21;
   const G = m.G;
-  if (G > 0) { L.gpus.push({ g: 0, top: r, util: 8, vram: r + 9 }); r += 12; }
-  for (let g = 1; g < G && r + 4 + 6 + 8 + 6 <= 61; g++) { L.gpus.push({ g, top: r, util: 3 }); r += 4; }
+  // A full GPU block: the load graph (util rows), its baseline row, the VRAM strip (2 rows) and a
+  // gap row. Its readout needs 5 lines above the VRAM line, so util is at least 5.
+  const full = (g, util) => { L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 }); r += util + 4; };
+  if (G > 0) full(0, 8);
+  for (let g = 1; g < G; g++) {
+    // Further GPUs get the same readout as the first while the network strip keeps 5 rows (its
+    // readout's NET, address, download, upload and peak lines); else the compact 4-row one.
+    if (r + 9 + 6 + 8 + 5 <= 61) full(g, 5);
+    else if (r + 4 + 6 + 8 + 6 <= 61) { L.gpus.push({ g, top: r, util: 3, h: 4 }); r += 4; }
+  }
   L.mem = r; r += 6;
   L.disk = r; r += 8;
   L.net = r; L.netRows = 61 - r;
@@ -660,9 +668,9 @@ function drawPane(m, now) {
   }
   edgeRules(L.net, L.net + NR, hasNet);
   ylabel('1G', L.net, L.net, L.net + NR);
-  ylabel('1M', mid - half / 2, L.net, L.net + NR);
+  if (NR >= 8) ylabel('1M', mid - half / 2, L.net, L.net + NR); // a short strip keeps only 1G / 1K / 1G
   ylabel('1K', mid, L.net, L.net + NR);
-  ylabel('1M', mid + half / 2, L.net, L.net + NR);
+  if (NR >= 8) ylabel('1M', mid + half / 2, L.net, L.net + NR);
   ylabel('1G', L.net + NR, L.net, L.net + NR);
 
   // Caption row: under each tick label, the time one column starting at that tick covers.
@@ -879,6 +887,7 @@ function drawNet(info, s, a, r, rows) {
   } else {
     dl(r + 2);
     ul(r + 3);
+    if (rows >= 5) { text(RX, r + 4, 'peak', C.dim); textR(REND, r + 4, fit(4, `▼ ${rate(a.peakRx)} · ▲ ${rate(a.peakTx)}`, `▼ ${rate(a.peakRx)} ▲ ${rate(a.peakTx)}`), C.dim); }
   }
 }
 
@@ -988,7 +997,7 @@ function partAt(m, r) {
   if (r < 3) return { kind: 'header' };
   if (r < 21) return { kind: 'cpu' };
   const L = paneRows(m);
-  for (const G of L.gpus) if (r >= G.top && r < G.top + (G.vram ? 12 : 4)) return { kind: 'gpu', g: G.g };
+  for (const G of L.gpus) if (r >= G.top && r < G.top + G.h) return { kind: 'gpu', g: G.g };
   if (r >= L.mem && r < L.mem + 6) return { kind: 'mem' };
   if (r >= L.disk && r < L.disk + 8) return { kind: 'disk' };
   if (r >= L.net && r < 62) return { kind: 'net' };

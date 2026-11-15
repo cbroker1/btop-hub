@@ -86,6 +86,9 @@ function edgeAge(x) {
   return 0;
 }
 const EDGE = Array.from({ length: 81 }, (_, x) => edgeAge(x));
+// The disk strip splits each column in two (160 bins, each half a column's time) so short bursts
+// are not averaged away; the halves still line up with the ticks and the other strips.
+const EDGE2 = Array.from({ length: 161 }, (_, k) => edgeAge(k / 2));
 const GUIDE_COLS = [11, 22, 31, 42, 53, 64];
 // Time one column covers: minutes from 60 s up, else seconds; one decimal below 10, none from 10
 // up, no trailing ".0" (3.7m, 1m, 29s, 7.3s).
@@ -287,22 +290,25 @@ const logFrac = v => (v > 1024 ? Math.min(1, Math.log2(v / 1024) / 20) : 0);
 function stat(n) { return { sum: new Float64Array(n), max: new Float64Array(n), cnt: new Uint16Array(n) }; }
 function addTo(st, col, v) { if (v === v) { st.sum[col] += v; if (st.cnt[col] === 0 || v > st.max[col]) st.max[col] = v; st.cnt[col]++; } }
 function aggregate(m, now) {
-  const E = new Float64Array(81);
+  const E = new Float64Array(81), E2 = new Float64Array(161);
   for (let x = 0; x <= 80; x++) E[x] = now - EDGE[x] * 1000;
+  for (let k = 0; k <= 160; k++) E2[k] = now - EDGE2[k] * 1000;
   const T = m.T;
   const a = {
     cpuSum: new Float64Array(80 * T), cpuMax: new Float64Array(80 * T), cpuCnt: new Uint16Array(80),
     gu: m.gu.map(() => stat(80)), gm: m.gm.map(() => stat(80)),
     mu: stat(80), mc: stat(80), dr: stat(80), dw: stat(80), nr: stat(80), nt: stat(80),
+    dr2: stat(160), dw2: stat(160),
     peakRx: NaN, peakTx: NaN, peakDr: NaN, peakDw: NaN,
   };
   let i = 0;
   while (i < m.n && m.t[i] < E[0]) i++;
-  let col = 0;
+  let col = 0, col2 = 0;
   for (; i < m.n; i++) {
     const t = m.t[i];
     if (t > now + 2000) break;
     while (col < 79 && t >= E[col + 1]) col++;
+    while (col2 < 159 && t >= E2[col2 + 1]) col2++;
     if (m.cpu[i * T] !== 0xffff && T) {
       a.cpuCnt[col]++;
       for (let k = 0; k < T; k++) {
@@ -313,6 +319,7 @@ function aggregate(m, now) {
     }
     for (let g = 0; g < m.G; g++) { addTo(a.gu[g], col, m.gu[g][i]); addTo(a.gm[g], col, m.gm[g][i]); }
     addTo(a.mu, col, m.mu[i]); addTo(a.mc, col, m.mc[i]); addTo(a.dr, col, m.dr[i]); addTo(a.dw, col, m.dw[i]);
+    addTo(a.dr2, col2, m.dr[i]); addTo(a.dw2, col2, m.dw[i]);
     addTo(a.nr, col, m.nr[i]); addTo(a.nt, col, m.nt[i]);
     if (m.nr[i] === m.nr[i] && !(m.nr[i] <= a.peakRx)) a.peakRx = m.nr[i];
     if (m.nt[i] === m.nt[i] && !(m.nt[i] <= a.peakTx)) a.peakTx = m.nt[i];
@@ -520,14 +527,14 @@ function edgeRules(r0, r1, has) {
 
 // One column of an area chart. base: the baseline, in rows; dir -1 grows up, +1 grows down.
 // Edges go through Y(), so they land on the same pixels as the strip's cell boundaries.
-function areaCol(c, base, dir, rows, mean, peak, key) {
+function areaCol(c, base, dir, rows, mean, peak, key, w = 1) { // w: width in columns, c may be fractional
   const e8 = rows * 8;
   // A mean that rounds to zero eighths still gets the minimum one-eighth sliver, but in the rule
   // colour: in the ramp's darkest red it read as an error underline under an idle GPU.
   const zero = !(Math.round(mean * e8) >= 1);
   let me = Math.max(1, Math.round(mean * e8)), pe = Math.max(me, Math.round(peak * e8));
   me = Math.min(me, e8); pe = Math.min(pe, e8);
-  const x0 = X(GX + c), x1 = X(GX + c + 1);
+  const x0 = X(GX + c), x1 = X(GX + c + w);
   const band = (e0, e1, color) => {
     const ya = Y(base + dir * e0 / 8), yb = Y(base + dir * e1 / 8);
     rect(x0, Math.min(ya, yb), x1, Math.max(ya, yb), color);
@@ -630,13 +637,13 @@ function drawPane(m, now) {
   ylabel('0', L.mem + 5, L.mem, L.mem + 5);
 
   // Disk I/O, as the network: reads up from the centre line, writes down, on the fixed log scale,
-  // both on the green disk ramp.
+  // both on the green disk ramp, in half-column bins.
   const DH = 3.5, dmid = L.disk + DH;
   const hasDisk = c => a.dr.cnt[c] > 0 || a.dw.cnt[c] > 0;
   stripBg(L.disk, L.disk + 7, hasDisk);
-  for (let c = 0; c < GW; c++) {
-    if (a.dr.cnt[c]) areaCol(c, dmid, -1, DH, logFrac(mean(a.dr, c)), logFrac(a.dr.max[c]), 'disk');
-    if (a.dw.cnt[c]) areaCol(c, dmid, 1, DH, logFrac(mean(a.dw, c)), logFrac(a.dw.max[c]), 'disk');
+  for (let k = 0; k < 2 * GW; k++) {
+    if (a.dr2.cnt[k]) areaCol(k / 2, dmid, -1, DH, logFrac(mean(a.dr2, k)), logFrac(a.dr2.max[k]), 'disk', 0.5);
+    if (a.dw2.cnt[k]) areaCol(k / 2, dmid, 1, DH, logFrac(mean(a.dw2, k)), logFrac(a.dw2.max[k]), 'disk', 0.5);
   }
   edgeRules(L.disk, L.disk + 7, hasDisk);
   ylabel('1G', L.disk, L.disk, L.disk + 7);

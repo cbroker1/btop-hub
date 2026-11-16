@@ -335,13 +335,21 @@ function aggregate(m, now) {
 // memory section. A discrete card sorts first, so an idle iGPU beside one does not count.
 const unifiedMem = info => !!(((info && info.gpus) || [])[0] || {}).shared;
 
+// Machines whose GPU blocks have no VRAM strip: the readout's VRAM line, bar and free line sit right
+// under pcie, and the load graph takes the strip's rows (Carl's choice for the gaming rig, 2026-11-15).
+const VRAM_INLINE = new Set(['gaming-rig']);
+
 function paneRows(m) {
   const L = { cpu: 4, gpus: [] };
   let r = 21;
   const G = m.G;
   // A full GPU block: the load graph (util rows), its baseline row, the VRAM strip (2 rows) and a
   // gap row. Its readout needs 5 lines above the VRAM line, so util is at least 5.
-  const full = (g, util) => { L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 }); r += util + 4; };
+  const full = (g, util) => {
+    if (VRAM_INLINE.has(m.id)) L.gpus.push({ g, top: r, util: util + 3, vramLine: r + 5, h: util + 4 });
+    else L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 });
+    r += util + 4;
+  };
   if (G > 0) {
     if (unifiedMem(m.info)) { L.gpus.push({ g: 0, top: r, util: 11, h: 12 }); r += 12; } // load graph takes the memory rows
     else full(0, 8);
@@ -803,8 +811,8 @@ function drawGPU(m, info, s, G) {
     text(RX, r + 4, 'pcie', C.dim);
     textR(REND, r + 4, fit(4, `▲ ${rate(gs.tx)} · ▼ ${rate(gs.rx)}`, `▲ ${rate(gs.tx)} ▼ ${rate(gs.rx)}`), C.dim);
   }
-  if (!G.vram) return; // shared memory: shown once, in MEM
-  const v = G.vram - 1, tot = gin.memTotal;
+  const v = G.vram ? G.vram - 1 : G.vramLine, tot = gin.memTotal;
+  if (v == null) return; // shared memory: shown once, in MEM
   text(RX, v, gin.shared ? 'GPU mem' : 'VRAM', C.text, true);
   textR(REND, v, pair(num(gs.m), tot > 0 ? tot : NaN), C.text);
   bar(RX, REND, v + 1, tot > 0 && gs.m != null ? [[gs.m / tot, C.fill]] : []);

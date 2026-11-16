@@ -183,11 +183,12 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
   does: disk reads grow up from the centre line and writes down, in green; network download grows up in teal and
   upload down in periwinkle. Each direction has its own scale, written at its edge of the strip (for example 5M
   above, 200K below) and on the readout's "scale" line. Full height is the smallest of 1, 2, 5, 10 ... 500 KiB/s,
-  MiB/s or GiB/s that holds the tallest column mean in view, and never less than 100 KiB/s for disks or 10 KiB/s
-  for the network, so idle chatter stays small. A column's mean falls as it ages into the wider columns on the
-  left, so one burst does not flatten the rest of the hour; a one-second peak above the scale stops at the
-  strip's edge, and the readout's "peak" line has its value. The detail overlay's charts scale to the highest
-  one-second value in the span instead, so nothing there is cut off.
+  MiB/s or GiB/s that holds the tallest column mean in view and at least three times the median column mean, and
+  never less than 100 KiB/s for disks or 10 KiB/s for the network. So idle chatter stays small, and a steady rate
+  is a low band (a third of its half at most) with the room above it left for bursts. A column's mean falls as it
+  ages into the wider columns on the left, so one burst does not flatten the rest of the hour; a one-second peak
+  above the scale stops at the strip's edge, and the readout's "peak" line has its value. The detail overlay's
+  charts scale to the highest one-second value in the span instead, so nothing there is cut off.
 - **No data** (before boot, asleep, agent stopped) is left blank in the page colour with a thin rule at its edge;
   it is never drawn as zero. A real zero (a mean under one eighth of a row) is a thin grey line at the baseline. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
   readouts.

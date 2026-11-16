@@ -293,13 +293,19 @@ function rateCeil(v, floor = 1024) {
   return x;
 }
 const DISK_FLOOR = 100 * 1024, NET_FLOOR = 10 * 1024; // bytes per second
-// A pane strip's scale: from the tallest column mean in view, each direction on its own. A column's
+// A pane strip's scale, each direction on its own: it holds the tallest column mean in view, and at
+// least STEADY_ROOM times the median column mean, so a steady rate is a low band (a third of the
+// strip's half at most) instead of a solid block, with the room above it for the bursts. A column's
 // mean falls as it ages into the wider columns on the left, so one old burst does not flatten the
-// rest of the hour; a peak above the scale stops at the strip's edge (its value is in the readout).
-function meanCeil(st, floor) {
-  let mx = 0;
-  for (let c = 0; c < st.cnt.length; c++) if (st.cnt[c]) { const v = st.sum[c] / st.cnt[c]; if (v > mx) mx = v; }
-  return rateCeil(mx, floor);
+// rest of the hour; a one-second peak above the scale stops at the strip's edge (the readout's
+// "peak" line has its value). Scaling to the highest peak instead left most strips empty.
+const STEADY_ROOM = 3;
+function stripCeil(st, floor) {
+  const v = [];
+  for (let c = 0; c < st.cnt.length; c++) if (st.cnt[c]) v.push(st.sum[c] / st.cnt[c]);
+  if (!v.length) return rateCeil(0, floor);
+  v.sort((x, y) => x - y);
+  return rateCeil(Math.max(v[v.length - 1], STEADY_ROOM * v[v.length >> 1]), floor);
 }
 // The scale in the 4-glyph gutter ("500K", "2M") and in a readout ("500 KiB/s").
 const scaleTick = v => Math.round(v / 1024 ** unitOf(v)) + 'BKMGT'[unitOf(v)];
@@ -345,8 +351,8 @@ function aggregate(m, now) {
     if (m.dw[i] === m.dw[i] && !(m.dw[i] <= a.peakDw)) a.peakDw = m.dw[i];
   }
   // Full-scale values of the throughput strips (the disk strip is drawn from its half-column bins).
-  a.sDr = meanCeil(a.dr2, DISK_FLOOR); a.sDw = meanCeil(a.dw2, DISK_FLOOR);
-  a.sNr = meanCeil(a.nr, NET_FLOOR); a.sNt = meanCeil(a.nt, NET_FLOOR);
+  a.sDr = stripCeil(a.dr2, DISK_FLOOR); a.sDw = stripCeil(a.dw2, DISK_FLOOR);
+  a.sNr = stripCeil(a.nr, NET_FLOOR); a.sNt = stripCeil(a.nt, NET_FLOOR);
   return a;
 }
 

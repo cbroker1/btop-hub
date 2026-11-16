@@ -381,7 +381,8 @@ const unifiedMem = info => !!(((info && info.gpus) || [])[0] || {}).shared;
 // under pcie (Carl's choice for the gaming rig, 2026-11-15).
 const VRAM_INLINE = new Set(['gaming-rig']);
 // Machines whose further GPUs' load graphs and memory graph are drawn at 70% height (the same day).
-// A further GPU's readout is drawn smaller to match, so its 8 lines end where its graph does.
+// A further GPU's readout drops its "free" line and is drawn smaller to match, so its 7 lines end
+// where its graph does.
 const SMALL_GRAPHS = new Set(['gaming-rig']);
 // A GPU load graph without a VRAM strip under it is as tall as the full readout (GPU, name, power,
 // clock, pcie, VRAM, bar, free), so its bottom lines up with the "free" line in every pane.
@@ -397,7 +398,8 @@ function paneRows(m) {
   const full = (g, util) => {
     if (VRAM_INLINE.has(m.id)) {
       const rows = g && small ? SMALL_GPU_ROWS : GPU_ROWS; // then a gap row
-      L.gpus.push({ g, top: r, util: rows, vramLine: r + 5, h: rows + 1, textK: rows / GPU_ROWS }); r += rows + 1;
+      const shrunk = rows < GPU_ROWS, lines = shrunk ? GPU_ROWS - 1 : GPU_ROWS; // readout lines
+      L.gpus.push({ g, top: r, util: rows, vramLine: r + 5, h: rows + 1, textK: rows / lines, noFree: shrunk }); r += rows + 1;
     }
     else { L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 }); r += util + 4; }
   };
@@ -882,7 +884,7 @@ function gpuReadout(m, info, s, G) {
   textR(REND, v, pair(num(gs.m), tot > 0 ? tot : NaN), C.text);
   bar(RX, REND, v + 1, tot > 0 && gs.m != null ? [[gs.m / tot, C.fill]] : []);
   // Free, from the unrounded values and formatted as the used / total line (the bar shows the share).
-  text(RX, v + 2, tot > 0 && gs.m != null ? size(Math.max(0, tot - gs.m)) + ' free' : 'n/a', C.dim);
+  if (!G.noFree) text(RX, v + 2, tot > 0 && gs.m != null ? size(Math.max(0, tot - gs.m)) + ' free' : 'n/a', C.dim);
 }
 
 // Fan as a percentage where the driver gives one, else the speed (the Z13's firmware reports rpm only).

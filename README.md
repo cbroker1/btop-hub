@@ -12,7 +12,7 @@ once a second and pushes to a hub that runs in Docker on your LAN, and every pan
 
 - **Every machine side by side**, each with an hour of history on a non-linear time axis (1h, 30m, 15m, 8m, 4m, 2m,
   1m, now): a per-thread CPU heat map, GPU busy and VRAM, memory and file cache, and disk reads and writes and
-  network download and upload on log scales, each with its rate now and its peak in the hour.
+  network download and upload on scales that follow the activity, each with its rate now and its peak in the hour.
 - **Tap for details.** Tap or click any part of a pane for an overlay with averages, peaks and one-second charts.
   Pinch to zoom; the panes fill any screen, and there is a full-screen mode.
 - **Small agents for Linux and Windows.** They sample once a second, keep their own last hour and push to the hub
@@ -179,9 +179,15 @@ on each machine with the new URL (it upgrades in place), or edit `"hub"` in its 
   yellow (busy). Beside it, the busiest threads in descending order (as many as fit beside the strip, 11) and how
   many threads are under 5%.
 - **GPU, memory.** GPU busy on top, GPU memory history under it (VRAM, or VRAM + GTT on a Linux APU, labelled "mem"); memory in use, with the OS file cache stacked above.
-- **Disk, network.** Bytes per second on a fixed log scale (1 KiB/s at the centre line, 1 GiB/s at full height):
-  disk reads grow up from the centre line and writes down, in green; network download grows up in teal and upload
-  down in periwinkle.
+- **Disk, network.** Bytes per second on linear scales that follow the activity, as Task Manager's Ethernet graph
+  does: disk reads grow up from the centre line and writes down, in green; network download grows up in teal and
+  upload down in periwinkle. Each direction has its own scale, written at its edge of the strip (for example 5M
+  above, 200K below) and on the readout's "scale" line. Full height is the smallest of 1, 2, 5, 10 ... 500 KiB/s,
+  MiB/s or GiB/s that holds the tallest column mean in view, and never less than 100 KiB/s for disks or 10 KiB/s
+  for the network, so idle chatter stays small. A column's mean falls as it ages into the wider columns on the
+  left, so one burst does not flatten the rest of the hour; a one-second peak above the scale stops at the
+  strip's edge, and the readout's "peak" line has its value. The detail overlay's charts scale to the highest
+  one-second value in the span instead, so nothing there is cut off.
 - **No data** (before boot, asleep, agent stopped) is left blank in the page colour with a thin rule at its edge;
   it is never drawn as zero. A real zero (a mean under one eighth of a row) is a thin grey line at the baseline. A pane whose agent has been silent for 5 s says "offline, last seen ..." and dims its
   readouts.

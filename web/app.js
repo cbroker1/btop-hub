@@ -283,8 +283,26 @@ function link(bps) { return bps >= 1e9 ? 'link ' + +(bps / 1e9).toFixed(1) + ' G
 function shortModel(s) {
   return (s || '').replace(/\bSSD\b/i, '').replace(/\s+\d+(\.\d+)?\s*(GB|TB|G|T)\s*$/i, '').replace(/\s+/g, ' ').trim();
 }
-// Log scale for throughput: 1 KiB/s at the baseline, 1 GiB/s at full height.
-const logFrac = v => (v > 1024 ? Math.min(1, Math.log2(v / 1024) / 20) : 0);
+// Throughput (disk, network) is drawn on a linear scale that follows the activity, as Task Manager's
+// Ethernet graph does. Full height is the smallest of 1, 2, 5, 10 ... 500 KiB/s, MiB/s, GiB/s that
+// holds the value, and never less than the floor, so idle chatter is not blown up to full height.
+const RATE_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500];
+function rateCeil(v, floor = 1024) {
+  const x = Math.max(v || 0, floor);
+  for (let u = 1; u <= 4; u++) for (const f of RATE_STEPS) if (x <= f * 1024 ** u) return f * 1024 ** u;
+  return x;
+}
+const DISK_FLOOR = 100 * 1024, NET_FLOOR = 10 * 1024; // bytes per second
+// A pane strip's scale: from the tallest column mean in view, each direction on its own. A column's
+// mean falls as it ages into the wider columns on the left, so one old burst does not flatten the
+// rest of the hour; a peak above the scale stops at the strip's edge (its value is in the readout).
+function meanCeil(st, floor) {
+  let mx = 0;
+  for (let c = 0; c < st.cnt.length; c++) if (st.cnt[c]) { const v = st.sum[c] / st.cnt[c]; if (v > mx) mx = v; }
+  return rateCeil(mx, floor);
+}
+// The scale in the 4-glyph gutter ("500K", "2M") and in a readout ("500 KiB/s").
+const scaleTick = v => Math.round(v / 1024 ** unitOf(v)) + 'BKMGT'[unitOf(v)];
 
 // ---- Aggregation: mean and peak of the 1-second samples in each column ---------------------
 function stat(n) { return { sum: new Float64Array(n), max: new Float64Array(n), cnt: new Uint16Array(n) }; }
@@ -326,6 +344,9 @@ function aggregate(m, now) {
     if (m.dr[i] === m.dr[i] && !(m.dr[i] <= a.peakDr)) a.peakDr = m.dr[i];
     if (m.dw[i] === m.dw[i] && !(m.dw[i] <= a.peakDw)) a.peakDw = m.dw[i];
   }
+  // Full-scale values of the throughput strips (the disk strip is drawn from its half-column bins).
+  a.sDr = meanCeil(a.dr2, DISK_FLOOR); a.sDw = meanCeil(a.dw2, DISK_FLOOR);
+  a.sNr = meanCeil(a.nr, NET_FLOOR); a.sNt = meanCeil(a.nt, NET_FLOOR);
   return a;
 }
 
@@ -660,34 +681,32 @@ function drawPane(m, now) {
   ylabel('100', L.mem, L.mem, L.mem + 5);
   ylabel('0', L.mem + 5, L.mem, L.mem + 5);
 
-  // Disk I/O, as the network: reads up from the centre line, writes down, on the fixed log scale,
-  // both on the green disk ramp, in half-column bins.
+  // Disk I/O, as the network: reads up from the centre line, writes down, each on its own linear
+  // scale that follows the activity (a.sDr, a.sDw), both on the green disk ramp, in half-column bins.
   const DH = 3.5, dmid = L.disk + DH;
   const hasDisk = c => a.dr.cnt[c] > 0 || a.dw.cnt[c] > 0;
   stripBg(L.disk, L.disk + 7, hasDisk);
   for (let k = 0; k < 2 * GW; k++) {
-    if (a.dr2.cnt[k]) areaCol(k / 2, dmid, -1, DH, logFrac(mean(a.dr2, k)), logFrac(a.dr2.max[k]), 'disk', 0.5);
-    if (a.dw2.cnt[k]) areaCol(k / 2, dmid, 1, DH, logFrac(mean(a.dw2, k)), logFrac(a.dw2.max[k]), 'disk', 0.5);
+    if (a.dr2.cnt[k]) areaCol(k / 2, dmid, -1, DH, mean(a.dr2, k) / a.sDr, a.dr2.max[k] / a.sDr, 'disk', 0.5);
+    if (a.dw2.cnt[k]) areaCol(k / 2, dmid, 1, DH, mean(a.dw2, k) / a.sDw, a.dw2.max[k] / a.sDw, 'disk', 0.5);
   }
   edgeRules(L.disk, L.disk + 7, hasDisk);
-  ylabel('1G', L.disk, L.disk, L.disk + 7);
-  ylabel('1K', dmid, L.disk, L.disk + 7);
-  ylabel('1G', L.disk + 7, L.disk, L.disk + 7);
+  ylabel(scaleTick(a.sDr), L.disk, L.disk, L.disk + 7);
+  ylabel('0', dmid, L.disk, L.disk + 7);
+  ylabel(scaleTick(a.sDw), L.disk + 7, L.disk, L.disk + 7);
 
-  // Network: download up from the centre line, upload down.
+  // Network: download up from the centre line, upload down, each on its own scale (a.sNr, a.sNt).
   const NR = L.netRows, half = NR / 2, mid = L.net + half;
   const hasNet = c => a.nr.cnt[c] > 0 || a.nt.cnt[c] > 0;
   stripBg(L.net, L.net + NR, hasNet);
   for (let c = 0; c < GW; c++) {
-    if (a.nr.cnt[c]) areaCol(c, mid, -1, half, logFrac(mean(a.nr, c)), logFrac(a.nr.max[c]), 'down');
-    if (a.nt.cnt[c]) areaCol(c, mid, 1, half, logFrac(mean(a.nt, c)), logFrac(a.nt.max[c]), 'up');
+    if (a.nr.cnt[c]) areaCol(c, mid, -1, half, mean(a.nr, c) / a.sNr, a.nr.max[c] / a.sNr, 'down');
+    if (a.nt.cnt[c]) areaCol(c, mid, 1, half, mean(a.nt, c) / a.sNt, a.nt.max[c] / a.sNt, 'up');
   }
   edgeRules(L.net, L.net + NR, hasNet);
-  ylabel('1G', L.net, L.net, L.net + NR);
-  if (NR >= 8) ylabel('1M', mid - half / 2, L.net, L.net + NR); // a short strip keeps only 1G / 1K / 1G
-  ylabel('1K', mid, L.net, L.net + NR);
-  if (NR >= 8) ylabel('1M', mid + half / 2, L.net, L.net + NR);
-  ylabel('1G', L.net + NR, L.net, L.net + NR);
+  ylabel(scaleTick(a.sNr), L.net, L.net, L.net + NR);
+  ylabel('0', mid, L.net, L.net + NR);
+  ylabel(scaleTick(a.sNt), L.net + NR, L.net, L.net + NR);
 
   // Caption row: under each tick label, the time one column starting at that tick covers.
   textR(GX - 1, 62, 'col =', C.dim);
@@ -866,6 +885,9 @@ function drawMem(info, s, r) {
   }
 }
 
+// The full-scale values of a strip's two halves, beside the 5-glyph "scale" label.
+const scalePair = (up, down) => fit(5, `▼ ${rate(up)} · ▲ ${rate(down)}`, `▼ ${rate(up)} ▲ ${rate(down)}`, `${scaleTick(up)} / ${scaleTick(down)}`);
+
 function drawDisk(info, s, a, r) {
   const d = info.disk || {}, label = 'DISK ' + (d.label || '');
   const used = num(s.du), tot = num(s.dt), f = used / tot;
@@ -881,7 +903,7 @@ function drawDisk(info, s, a, r) {
   text(RX, r + 5, 'peak', C.dim);
   textR(REND, r + 5, fit(4, `▼ ${rate(a.peakDr)} · ▲ ${rate(a.peakDw)}`, `▼ ${rate(a.peakDr)} ▲ ${rate(a.peakDw)}`), C.dim);
   text(RX, r + 6, 'scale', C.dim);
-  textR(REND, r + 6, 'log, bytes per second', C.dim);
+  textR(REND, r + 6, scalePair(a.sDr, a.sDw), C.dim);
 }
 
 function drawNet(info, s, a, r, rows) {
@@ -899,12 +921,12 @@ function drawNet(info, s, a, r, rows) {
     ul(r + 7);
     text(RX, r + 8, 'peak', C.dim); textR(REND, r + 8, rate(a.peakTx), C.dim);
     text(RX, r + 9, 'total', C.dim); textR(REND, r + 9, size(num(s.ntt)), C.dim);
-    text(RX, r + 11, 'scale', C.dim); textR(REND, r + 11, 'log, bytes per second', C.dim);
+    text(RX, r + 11, 'scale', C.dim); textR(REND, r + 11, scalePair(a.sNr, a.sNt), C.dim);
   } else if (rows >= 8) {
     dl(r + 3);
     ul(r + 4);
     text(RX, r + 5, 'peak', C.dim); textR(REND, r + 5, fit(4, `▼ ${rate(a.peakRx)} · ▲ ${rate(a.peakTx)}`, `▼ ${rate(a.peakRx)} ▲ ${rate(a.peakTx)}`), C.dim);
-    text(RX, r + 7, 'scale', C.dim); textR(REND, r + 7, 'log, bytes per second', C.dim);
+    text(RX, r + 7, 'scale', C.dim); textR(REND, r + 7, scalePair(a.sNr, a.sNt), C.dim);
   } else {
     dl(r + 2);
     ul(r + 3);
@@ -1183,8 +1205,8 @@ const DETAIL = {
       ['written in the last ' + spanText(), dw.n ? size(dw.sum) : 'n/a', '', ''],
     ];
     const strips = [
-      { label: 'read', scale: 'log', ramp: 'disk', get: i => m.dr[i], fmt: rate },
-      { label: 'write', scale: 'log', ramp: 'disk', get: i => m.dw[i], fmt: rate },
+      { label: 'read', scale: 'rate', ramp: 'disk', get: i => m.dr[i], fmt: rate },
+      { label: 'write', scale: 'rate', ramp: 'disk', get: i => m.dw[i], fmt: rate },
     ];
     const sub = [DISK_ALIAS[d.model] || d.model, d.bus, 'space is the system volume, rates all physical disks'].filter(Boolean).join(' · ');
     return { title: 'Disk ' + (d.label || ''), sub, rows, strips };
@@ -1201,8 +1223,8 @@ const DETAIL = {
       ['total sent', size(num(s.ntt)), '', ''],
     ];
     const strips = [
-      { label: 'download', scale: 'log', ramp: 'down', get: i => m.nr[i], fmt: rate },
-      { label: 'upload', scale: 'log', ramp: 'up', get: i => m.nt[i], fmt: rate },
+      { label: 'download', scale: 'rate', ramp: 'down', get: i => m.nr[i], fmt: rate },
+      { label: 'upload', scale: 'rate', ramp: 'up', get: i => m.nt[i], fmt: rate },
     ];
     const sub = [n.desc, n.kind, n.addr, n.link ? link(n.link).replace('link ', '') + ' link' : ''].filter(Boolean).join(' · ');
     return { title: 'Network ' + (n.name || ''), sub, rows, strips };
@@ -1324,12 +1346,12 @@ function drawHeatCols(g, m, T, ci, ncol, xAt, top, bh) {
 function drawStripCols(g, st, ci, ncol, xAt, top, bh, lw) {
   let norm, range, lo = 0, hi = 1;
   if (st.scale === 'pct') { norm = v => v; range = '0 to 100%'; }
-  else if (st.scale === 'log') { norm = logFrac; range = 'log, 1 KiB/s to 1 GiB/s'; }
-  else { // from the data in view: from zero, or a range in tens (temperatures)
+  else { // from the data in view: from zero (throughput on its round steps), or a range in tens (temperatures)
     let mn = Infinity, mx = -Infinity;
     for (let i = ci[0]; i < ci[ncol]; i++) { const v = st.get(i); if (v === v) { if (v < mn) mn = v; if (v > mx) mx = v; } }
     if (!(mx >= mn)) { mn = 0; mx = 1; }
-    if (st.scale === 'zero') hi = niceUp(mx);
+    if (st.scale === 'rate') hi = rateCeil(mx);
+    else if (st.scale === 'zero') hi = niceUp(mx);
     else { lo = Math.floor(mn / 10) * 10; hi = Math.max(lo + 10, Math.ceil(mx / 10) * 10); }
     norm = v => (v - lo) / (hi - lo);
     range = (lo ? st.fmt(lo) : '0') + ' to ' + st.fmt(hi);

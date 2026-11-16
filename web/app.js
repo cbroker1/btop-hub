@@ -293,19 +293,20 @@ function rateCeil(v, floor = 1024) {
   return x;
 }
 const DISK_FLOOR = 100 * 1024, NET_FLOOR = 10 * 1024; // bytes per second
-// A pane strip's scale, each direction on its own: it holds the tallest column mean in view, and at
-// least STEADY_ROOM times the median column mean, so a steady rate is a low band (a third of the
-// strip's half at most) instead of a solid block, with the room above it for the bursts. A column's
-// mean falls as it ages into the wider columns on the left, so one old burst does not flatten the
-// rest of the hour; a one-second peak above the scale stops at the strip's edge (the readout's
-// "peak" line has its value). Scaling to the highest peak instead left most strips empty.
-const STEADY_ROOM = 3;
-function stripCeil(st, floor) {
+// A pane strip's scale, each direction on its own: it holds the busiest BUSY_MS of the hour in view
+// (the highest mean over a fixed one-minute slot), and at least STEADY_ROOM times the median column
+// mean, so a steady rate is a low band (a third of the strip's half at most) with the room above it
+// for the bursts. Both hold still while the data scrolls: a burst counts the same at any age. A
+// shorter spike above the scale stops at the strip's edge (the readout's "peak" line has its value).
+// Tried and dropped: the highest one-second peak (one spike left the strip empty for an hour) and
+// the tallest column mean (it changes as samples cross column edges and as bursts age into wider
+// columns, so the scale jumped up to 60 times in 10 minutes and the strip flashed).
+const STEADY_ROOM = 3, BUSY_MS = 60000, BUSY_N = 60; // BUSY_N: samples a full slot holds at 1 Hz
+function stripCeil(st, busiest, floor) {
   const v = [];
   for (let c = 0; c < st.cnt.length; c++) if (st.cnt[c]) v.push(st.sum[c] / st.cnt[c]);
-  if (!v.length) return rateCeil(0, floor);
   v.sort((x, y) => x - y);
-  return rateCeil(Math.max(v[v.length - 1], STEADY_ROOM * v[v.length >> 1]), floor);
+  return rateCeil(Math.max(busiest, v.length ? STEADY_ROOM * v[v.length >> 1] : 0), floor);
 }
 // The scale in the 4-glyph gutter ("500K", "2M") and in a readout ("500 KiB/s").
 const scaleTick = v => Math.round(v / 1024 ** unitOf(v)) + 'BKMGT'[unitOf(v)];
@@ -328,9 +329,22 @@ function aggregate(m, now) {
   let i = 0;
   while (i < m.n && m.t[i] < E[0]) i++;
   let col = 0, col2 = 0;
+  // The busiest slot of each throughput series: sums over fixed BUSY_MS slots of the hub's clock. A
+  // slot still filling (or with samples missing) is divided by a full slot's count, so the scale
+  // only rises while a burst arrives and never overshoots.
+  const SER = [m.dr, m.dw, m.nr, m.nt], slotSum = [0, 0, 0, 0], busy = [0, 0, 0, 0];
+  let slot = -1, slotN = 0;
+  const closeSlot = () => {
+    for (let q = 0; q < 4; q++) { const v = slotSum[q] / Math.max(slotN, BUSY_N); if (v > busy[q]) busy[q] = v; slotSum[q] = 0; }
+    slotN = 0;
+  };
   for (; i < m.n; i++) {
     const t = m.t[i];
     if (t > now + 2000) break;
+    const sl = Math.floor(t / BUSY_MS);
+    if (sl !== slot) { closeSlot(); slot = sl; }
+    slotN++;
+    for (let q = 0; q < 4; q++) { const v = SER[q][i]; if (v === v) slotSum[q] += v; }
     while (col < 79 && t >= E[col + 1]) col++;
     while (col2 < 159 && t >= E2[col2 + 1]) col2++;
     if (m.cpu[i * T] !== 0xffff && T) {
@@ -350,9 +364,10 @@ function aggregate(m, now) {
     if (m.dr[i] === m.dr[i] && !(m.dr[i] <= a.peakDr)) a.peakDr = m.dr[i];
     if (m.dw[i] === m.dw[i] && !(m.dw[i] <= a.peakDw)) a.peakDw = m.dw[i];
   }
-  // Full-scale values of the throughput strips (the disk strip is drawn from its half-column bins).
-  a.sDr = stripCeil(a.dr2, DISK_FLOOR); a.sDw = stripCeil(a.dw2, DISK_FLOOR);
-  a.sNr = stripCeil(a.nr, NET_FLOOR); a.sNt = stripCeil(a.nt, NET_FLOOR);
+  closeSlot();
+  // Full-scale values of the throughput strips.
+  a.sDr = stripCeil(a.dr, busy[0], DISK_FLOOR); a.sDw = stripCeil(a.dw, busy[1], DISK_FLOOR);
+  a.sNr = stripCeil(a.nr, busy[2], NET_FLOOR); a.sNt = stripCeil(a.nt, busy[3], NET_FLOOR);
   return a;
 }
 

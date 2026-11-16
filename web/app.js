@@ -363,31 +363,38 @@ function aggregate(m, now) {
 const unifiedMem = info => !!(((info && info.gpus) || [])[0] || {}).shared;
 
 // Machines whose GPU blocks have no VRAM strip: the readout's VRAM line, bar and free line sit right
-// under pcie, and the load graph takes the strip's rows (Carl's choice for the gaming rig, 2026-11-15).
+// under pcie (Carl's choice for the gaming rig, 2026-11-15).
 const VRAM_INLINE = new Set(['gaming-rig']);
+// Machines whose further GPUs' load graphs and memory graph are drawn at 70% height (the same day).
+const SMALL_GRAPHS = new Set(['gaming-rig']);
+// A GPU load graph without a VRAM strip under it is as tall as the full readout (GPU, name, power,
+// clock, pcie, VRAM, bar, free), so its bottom lines up with the "free" line in every pane.
+const GPU_ROWS = 8;
 
 function paneRows(m) {
   const L = { cpu: 4, gpus: [] };
   let r = 21;
-  const G = m.G;
-  // A full GPU block: the load graph (util rows), its baseline row, the VRAM strip (2 rows) and a
-  // gap row. Its readout needs 5 lines above the VRAM line, so util is at least 5.
+  const G = m.G, small = SMALL_GRAPHS.has(m.id);
+  // A full GPU block. With the VRAM strip: the load graph (util rows), its baseline row, the strip
+  // (2 rows) and a gap row; the readout needs 5 lines above its VRAM line, so util is at least 5.
+  // Without it: the 8 readout lines and a gap row, beside a graph of GPU_ROWS or less.
   const full = (g, util) => {
-    if (VRAM_INLINE.has(m.id)) L.gpus.push({ g, top: r, util: util + 3, vramLine: r + 5, h: util + 4 });
-    else L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 });
-    r += util + 4;
+    if (VRAM_INLINE.has(m.id)) { L.gpus.push({ g, top: r, util: g && small ? 5.5 : GPU_ROWS, vramLine: r + 5, h: GPU_ROWS + 1 }); r += GPU_ROWS + 1; }
+    else { L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 }); r += util + 4; }
   };
+  L.memG = small ? 3.5 : 5;  // memory graph rows
+  L.memH = small ? 5 : 6;    // memory block rows: its readout lines and a gap row
   if (G > 0) {
-    if (unifiedMem(m.info)) { L.gpus.push({ g: 0, top: r, util: 11, h: 12 }); r += 12; } // load graph takes the memory rows
+    if (unifiedMem(m.info)) { L.gpus.push({ g: 0, top: r, util: GPU_ROWS, h: GPU_ROWS + 1 }); r += GPU_ROWS + 1; } // memory is shown once, in MEM
     else full(0, 8);
   }
   for (let g = 1; g < G; g++) {
     // Further GPUs get the same readout as the first while the network strip keeps 5 rows (its
     // readout's NET, address, download, upload and peak lines); else the compact 4-row one.
-    if (r + 9 + 6 + 8 + 5 <= 61) full(g, 5);
-    else if (r + 4 + 6 + 8 + 6 <= 61) { L.gpus.push({ g, top: r, util: 3, h: 4, compact: true }); r += 4; }
+    if (r + 9 + L.memH + 8 + 5 <= 61) full(g, 5);
+    else if (r + 4 + L.memH + 8 + 6 <= 61) { L.gpus.push({ g, top: r, util: 3, h: 4, compact: true }); r += 4; }
   }
-  L.mem = r; r += 6;
+  L.mem = r; r += L.memH;
   L.disk = r; r += 8;
   L.net = r; L.netRows = 61 - r;
   return L;
@@ -673,19 +680,20 @@ function drawPane(m, now) {
   // Memory: used, with cached stacked above (used only where CPU and GPU share it).
   const memTot = info.memTotal, uni = unifiedMem(info);
   const hasMem = c => a.mu.cnt[c] > 0;
-  stripBg(L.mem, L.mem + 5, hasMem);
+  const MG = L.memG, m8 = MG * 8;
+  stripBg(L.mem, L.mem + MG, hasMem);
   if (memTot > 0) {
-    const base = L.mem + 5;
+    const base = L.mem + MG;
     for (let c = 0; c < GW; c++) {
       if (!hasMem(c)) continue;
-      const u = Math.max(1 / 40, mean(a.mu, c) / memTot);
-      if (a.mc.cnt[c] && !uni) flatCol(c, base, 5, Math.round(u * 40) / 40, Math.min(1, u + mean(a.mc, c) / memTot), C.histCached);
-      flatCol(c, base, 5, 0, u, C.hist);
+      const u = Math.max(1 / m8, mean(a.mu, c) / memTot);
+      if (a.mc.cnt[c] && !uni) flatCol(c, base, MG, Math.round(u * m8) / m8, Math.min(1, u + mean(a.mc, c) / memTot), C.histCached);
+      flatCol(c, base, MG, 0, u, C.hist);
     }
   }
-  edgeRules(L.mem, L.mem + 5, hasMem);
-  ylabel('100', L.mem, L.mem, L.mem + 5);
-  ylabel('0', L.mem + 5, L.mem, L.mem + 5);
+  edgeRules(L.mem, L.mem + MG, hasMem);
+  ylabel('100', L.mem, L.mem, L.mem + MG);
+  ylabel('0', L.mem + MG, L.mem, L.mem + MG);
 
   // Disk I/O, as the network: reads up from the centre line, writes down, each on its own linear
   // scale that follows the activity (a.sDr, a.sDw), both on the green disk ramp, in half-column bins.
@@ -722,7 +730,7 @@ function drawPane(m, now) {
   ctx.globalAlpha = offline ? 0.45 : 1;
   drawCPU(m, info, s, L);
   for (const G of L.gpus) drawGPU(m, info, s, G);
-  drawMem(info, s, L.mem);
+  drawMem(info, s, L.mem, L.memH - 1);
   drawDisk(info, s, a, L.disk);
   drawNet(info, s, a, L.net, NR);
   ctx.globalAlpha = 1;
@@ -857,7 +865,7 @@ function gpuClocks(gs) {
   return 'n/a';
 }
 
-function drawMem(info, s, r) {
+function drawMem(info, s, r, lines) { // lines: readout rows the block has
   const tot = info.memTotal, used = num(s.mu), cached = num(s.mc), free = num(s.mf);
   const uf = used / tot;
   let c = RX + 3;
@@ -883,12 +891,8 @@ function drawMem(info, s, r) {
   if (alert) { text(RX, r + 3, label, C.text, true); badge(RX + glyphs(label) + 1, r + 3, pct(sf)); }
   else text(RX, r + 3, label, C.dim);
   textR(REND, r + 3, st === 0 ? 'none' : pair(su, st), C.text);
-  if (s.cu != null && s.cl != null) {
-    text(RX, r + 4, 'commit', C.dim);
-    textR(REND, r + 4, pair(s.cu, s.cl) + ' · ' + pct(s.cu / s.cl), C.dim);
-  } else if (st > 0) {
-    bar(RX, REND, r + 4, [[sf, alert ? C.alert : C.fill]]);
-  }
+  // (Windows' commit charge is in the detail overlay only: Carl had no use for it here.)
+  if (st > 0 && lines >= 5) bar(RX, REND, r + 4, [[sf, alert ? C.alert : C.fill]]);
 }
 
 // The full-scale values of a strip's two halves, beside the 5-glyph "scale" label.
@@ -1047,7 +1051,7 @@ function partAt(m, r) {
   if (r < 21) return { kind: 'cpu' };
   const L = paneRows(m);
   for (const G of L.gpus) if (r >= G.top && r < G.top + G.h) return { kind: 'gpu', g: G.g };
-  if (r >= L.mem && r < L.mem + 6) return { kind: 'mem' };
+  if (r >= L.mem && r < L.mem + L.memH) return { kind: 'mem' };
   if (r >= L.disk && r < L.disk + 8) return { kind: 'disk' };
   if (r >= L.net && r < 62) return { kind: 'net' };
   return { kind: null };

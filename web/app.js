@@ -381,10 +381,11 @@ const unifiedMem = info => !!(((info && info.gpus) || [])[0] || {}).shared;
 // under pcie (Carl's choice for the gaming rig, 2026-11-15).
 const VRAM_INLINE = new Set(['gaming-rig']);
 // Machines whose further GPUs' load graphs and memory graph are drawn at 70% height (the same day).
+// A further GPU's readout is drawn smaller to match, so its 8 lines end where its graph does.
 const SMALL_GRAPHS = new Set(['gaming-rig']);
 // A GPU load graph without a VRAM strip under it is as tall as the full readout (GPU, name, power,
 // clock, pcie, VRAM, bar, free), so its bottom lines up with the "free" line in every pane.
-const GPU_ROWS = 8;
+const GPU_ROWS = 8, SMALL_GPU_ROWS = 5.5;
 
 function paneRows(m) {
   const L = { cpu: 4, gpus: [] };
@@ -394,7 +395,10 @@ function paneRows(m) {
   // (2 rows) and a gap row; the readout needs 5 lines above its VRAM line, so util is at least 5.
   // Without it: the 8 readout lines and a gap row, beside a graph of GPU_ROWS or less.
   const full = (g, util) => {
-    if (VRAM_INLINE.has(m.id)) { L.gpus.push({ g, top: r, util: g && small ? 5.5 : GPU_ROWS, vramLine: r + 5, h: GPU_ROWS + 1 }); r += GPU_ROWS + 1; }
+    if (VRAM_INLINE.has(m.id)) {
+      const rows = g && small ? SMALL_GPU_ROWS : GPU_ROWS; // then a gap row
+      L.gpus.push({ g, top: r, util: rows, vramLine: r + 5, h: rows + 1, textK: rows / GPU_ROWS }); r += rows + 1;
+    }
     else { L.gpus.push({ g, top: r, util, vram: r + util + 1, h: util + 4 }); r += util + 4; }
   };
   L.memG = small ? 3.5 : 5;  // memory graph rows
@@ -530,31 +534,39 @@ const lineW = () => Math.max(1, Math.round(u * zs / 8)); // 1 px at the design's
 const barH = () => Math.round(0.9 * fontPxZ());          // 12 px at the design's size
 function rect(x0, y0, x1, y1, color) { ctx.fillStyle = color; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); }
 function cells(c0, r0, c1, r1, color) { rect(X(c0), Y(r0), X(c1), Y(r1), color); }
+// A readout drawn smaller (k < 1), so that all its lines fit beside a short graph. Rows shrink
+// towards the block's top row; columns towards RX for text placed from the left and towards REND
+// for text placed from the right, so both margins stay where every other readout has them.
+let rs = null; // {k, top} while such a readout is drawn
+const rk = () => (rs ? rs.k : 1);
+const RY = row => (rs ? Y(rs.top + (row - rs.top) * rs.k) : Y(row));
+const RXL = col => (rs ? X(RX) + (col - RX) * cellPx() * rs.k : X(col));
+const RXR = end => (rs ? X(REND) - (REND - end) * cellPx() * rs.k : X(end));
 function font(bold) {
-  const f = `${bold ? 700 : 400} ${fontPxZ()}px JBM`;
+  const f = `${bold ? 700 : 400} ${fontPxZ() * rk()}px JBM`;
   if (f !== curFont) { ctx.font = f; curFont = f; }
 }
 const glyphs = s => [...s].length;
-const textW = s => glyphs(s) * cellPx();
+const textW = s => glyphs(s) * cellPx() * rk();
 // Text starting at canvas x, centred in row `row`.
 function textAt(x, row, s, color, bold) {
   if (!s) return;
   font(bold);
   ctx.fillStyle = color;
-  ctx.fillText(s, Math.round(x), Y(row) + Math.round(rowPx() / 2 + 0.36 * fontPxZ())); // baseline of a centred line
+  ctx.fillText(s, Math.round(x), RY(row) + Math.round((rowPx() / 2 + 0.36 * fontPxZ()) * rk())); // baseline of a centred line
 }
-function text(col, row, s, color, bold) { textAt(X(col), row, s, color, bold); }
+function text(col, row, s, color, bold) { textAt(RXL(col), row, s, color, bold); }
 // Text ending at column `end`.
-function textR(end, row, s, color, bold) { if (s) textAt(X(end) - textW(s), row, s, color, bold); }
+function textR(end, row, s, color, bold) { if (s) textAt(RXR(end) - textW(s), row, s, color, bold); }
 // First variant that leaves at least one blank cell after a left label of length used.
 function fit(used, ...variants) {
-  for (const v of variants) if (v && used + 1 + glyphs(v) <= REND - RX) return v;
+  for (const v of variants) if (v && used + 1 + glyphs(v) <= (REND - RX) / rk()) return v;
   return '';
 }
 // A 12 px bar (at the design's size) from canvas x0 to x1 in row r; segments are [fraction, colour].
 function barAt(x0, x1, r, segs, track) {
   x0 = Math.round(x0); x1 = Math.round(x1);
-  const bh = barH(), y0 = Y(r) + Math.round((rowPx() - bh) / 2), y1 = y0 + bh;
+  const bh = Math.round(barH() * rk()), y0 = RY(r) + Math.round((rowPx() * rk() - bh) / 2), y1 = y0 + bh;
   rect(x0, y0, x1, y1, track || C.track);
   let x = x0;
   for (const [f, color] of segs) {
@@ -566,15 +578,16 @@ function barAt(x0, x1, r, segs, track) {
 }
 function bar(c0, c1, r, segs, track) { barAt(X(c0), X(c1), r, segs, track); }
 // Alert badge: alert colour behind black text, padded by one cell. Returns the end column.
-function badge(col, r, s) {
-  const n = glyphs(s) + 2, x0 = X(col), x1 = Math.round(x0 + n * cellPx());
-  const rowH = Y(r + 1) - Y(r), bh = Math.min(rowH, Math.round(1.5 * fontPxZ()));
-  const y0 = Y(r) + Math.round((rowH - bh) / 2);
+function badgeAt(x0, r, s) {
+  const n = glyphs(s) + 2, cw = cellPx() * rk(), x1 = Math.round(x0 + n * cw);
+  x0 = Math.round(x0);
+  const rowH = RY(r + 1) - RY(r), bh = Math.min(rowH, Math.round(1.5 * fontPxZ() * rk()));
+  const y0 = RY(r) + Math.round((rowH - bh) / 2);
   rect(x0, y0, x1, y0 + bh, C.alert);
-  textAt(x0 + cellPx(), r, s, C.alertText, true);
-  return col + n;
+  textAt(x0 + cw, r, s, C.alertText, true);
 }
-function badgeR(end, r, s) { badge(end - glyphs(s) - 2, r, s); }
+function badge(col, r, s) { badgeAt(RXL(col), r, s); return col + glyphs(s) + 2; }
+function badgeR(end, r, s) { badgeAt(RXR(end) - (glyphs(s) + 2) * cellPx() * rk(), r, s); }
 
 // ---- Strip backgrounds, guides, wash and the no-data rule ------------------------------------
 function stripBg(r0, r1, has) {
@@ -833,6 +846,10 @@ function gpuTemp(gin, gs, end, r) {
 }
 
 function drawGPU(m, info, s, G) {
+  rs = G.textK < 1 ? { k: G.textK, top: G.top } : null;
+  try { gpuReadout(m, info, s, G); } finally { rs = null; }
+}
+function gpuReadout(m, info, s, G) {
   const gi = G.g, gin = (info.gpus || [])[gi] || {}, gs = (s.g && s.g[gi]) || {};
   const r = G.top;
   text(RX, r, m.G > 1 ? 'GPU ' + gi : 'GPU', C.text, true);

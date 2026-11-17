@@ -75,7 +75,7 @@ type GPUInfo struct {
 	TempLimit float64 `json:"tlim,omitempty"` // °C, the GPU's own limit (NVIDIA: slowdown temperature), 0 if unknown
 }
 
-// NetInfo describes the interface the network strip follows.
+// NetInfo describes the interface(s) the network strip follows; on Linux several are joined with " + ".
 type NetInfo struct {
 	Name    string `json:"name,omitempty"` // "wlp76s0", "Ethernet", "Wi-Fi"
 	Desc    string `json:"desc,omitempty"` // adapter description, e.g. "Marvell AQtion 10Gbit"

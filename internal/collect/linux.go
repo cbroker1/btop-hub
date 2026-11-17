@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,7 +47,7 @@ type linux struct {
 	diskUsed    int64
 	diskTotal   int64
 
-	netIf      string
+	netIfs     []string
 	netInfo    proto.NetInfo
 	netAt      time.Time
 	prevRx     uint64
@@ -579,38 +580,69 @@ func defaultRouteIfs() []string {
 	return out
 }
 
-// refreshNet follows the default-route interface, skipping loopback and virtual adapters.
+// refreshNet follows every physical interface with an IPv4 default route (ethernet and Wi-Fi
+// both, when both are up), skipping loopback and virtual adapters. collectNet sums their
+// counters, so traffic that leaves by the second adapter's address is counted too.
 func (c *linux) refreshNet(now time.Time) {
 	c.netAt = now
 	cands := defaultRouteIfs()
-	pick := ""
+	var picks []string
 	for _, n := range cands {
-		if !isVirtualIf(n) {
-			pick = n
-			break
+		if !isVirtualIf(n) && !slices.Contains(picks, n) {
+			picks = append(picks, n)
 		}
 	}
 	kindOverride := ""
-	if pick == "" && len(cands) > 0 {
-		pick, kindOverride = cands[0], "virtual"
+	if len(picks) == 0 && len(cands) > 0 {
+		picks, kindOverride = cands[:1], "virtual"
 	}
-	if pick == "" {
-		c.netIf = ""
+	if len(picks) == 0 {
+		c.netIfs = nil
 		c.netInfo = proto.NetInfo{}
 		c.sources["net"] = "none: no IPv4 default route"
 		return
 	}
-	if pick != c.netIf {
+	if !slices.Equal(picks, c.netIfs) {
 		c.havePrevNt = false
 	}
-	c.netIf = pick
-	ni := proto.NetInfo{Name: pick, Kind: kindOverride}
-	base := "/sys/class/net/" + pick
+	c.netIfs = picks
+	ni := describeNetIf(picks[0], kindOverride) // the lowest-metric route gives the address
+	if len(picks) > 1 {
+		var names, kinds, descs []string
+		var link int64
+		for _, p := range picks {
+			d := describeNetIf(p, "")
+			names = append(names, p)
+			if !slices.Contains(kinds, d.Kind) {
+				kinds = append(kinds, d.Kind)
+			}
+			if d.Desc != "" && !slices.Contains(descs, d.Desc) {
+				descs = append(descs, d.Desc)
+			}
+			if link >= 0 && d.LinkBps > 0 {
+				link += d.LinkBps
+			} else {
+				link = -1 // a speed is unknown (Wi-Fi has none here): show none
+			}
+		}
+		ni.Name = strings.Join(names, " + ")
+		ni.Kind = strings.Join(kinds, " + ")
+		ni.Desc = strings.Join(descs, " + ")
+		ni.LinkBps = max(link, 0)
+	}
+	c.netInfo = ni
+	c.sources["net"] = fmt.Sprintf("/sys/class/net/{%s}/statistics summed (IPv4 default routes, %s)", strings.Join(picks, ","), ni.Kind)
+}
+
+// describeNetIf reads one interface's kind, link speed, driver and first IPv4 address.
+func describeNetIf(name, kind string) proto.NetInfo {
+	ni := proto.NetInfo{Name: name, Kind: kind}
+	base := "/sys/class/net/" + name
 	if ni.Kind == "" {
 		switch {
 		case exists(base + "/wireless"), exists(base + "/phy80211"):
 			ni.Kind = "wireless"
-		case pick == "lo":
+		case name == "lo":
 			ni.Kind = "loopback"
 		default:
 			ni.Kind = "wired"
@@ -624,7 +656,7 @@ func (c *linux) refreshNet(now time.Time) {
 	if drv, err := os.Readlink(base + "/device/driver"); err == nil {
 		ni.Desc = filepath.Base(drv)
 	}
-	if ifc, err := net.InterfaceByName(pick); err == nil {
+	if ifc, err := net.InterfaceByName(name); err == nil {
 		if addrs, err := ifc.Addrs(); err == nil {
 			for _, a := range addrs {
 				if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
@@ -634,8 +666,7 @@ func (c *linux) refreshNet(now time.Time) {
 			}
 		}
 	}
-	c.netInfo = ni
-	c.sources["net"] = fmt.Sprintf("/sys/class/net/%s/statistics (IPv4 default route, %s)", pick, ni.Kind)
+	return ni
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
@@ -1011,15 +1042,19 @@ func (c *linux) collectDisk(s *proto.Sample, now time.Time, dt time.Duration) {
 }
 
 func (c *linux) collectNet(s *proto.Sample, now time.Time, dt time.Duration) {
-	if c.netIf == "" {
+	if len(c.netIfs) == 0 {
 		return
 	}
-	base := "/sys/class/net/" + c.netIf + "/statistics/"
-	rx, ok1 := readUint(base + "rx_bytes")
-	tx, ok2 := readUint(base + "tx_bytes")
-	if !ok1 || !ok2 {
-		c.havePrevNt = false
-		return
+	var rx, tx uint64
+	for _, n := range c.netIfs {
+		base := "/sys/class/net/" + n + "/statistics/"
+		r, ok1 := readUint(base + "rx_bytes")
+		t, ok2 := readUint(base + "tx_bytes")
+		if !ok1 || !ok2 { // adapter gone; the next refreshNet drops it
+			c.havePrevNt = false
+			return
+		}
+		rx, tx = rx+r, tx+t
 	}
 	s.NetRxTotal, s.NetTxTotal = proto.I64(int64(rx)), proto.I64(int64(tx))
 	if c.havePrevNt && dt > 0 {
